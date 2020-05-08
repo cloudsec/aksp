@@ -14,7 +14,7 @@ Actually checking rootkit in kernel level still need to discuss with the communi
 if need to design an ARK(anti rootkit) tool for the linux system...
  So, i remove the ksg_guard code, and going to rewrite with netlink interfaces.
 
-- i aslo remove the hide symbol module, because the kptr_restrict is good enough.
+- i also remove the hide symbol module, because the kptr_restrict is good enough.
   thanks shoulewoba to review the code.
 
 - remove huawei strings, because this is my personal work, not official project.
