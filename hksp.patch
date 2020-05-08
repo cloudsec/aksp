@@ -283,7 +283,7 @@ diff -urN linux-5.6.7/Documentation/security/hksp.rst linux-5.6.7-new/Documentat
 +++ linux-5.6.7-new/Documentation/security/hksp.rst	2020-05-09 00:32:29.619671135 -0700
 @@ -0,0 +1,150 @@
 +=============================
-+Huawei kernel self protection
++Another kernel self protection
 +=============================
 +
 +Cred guard
