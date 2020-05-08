@@ -1,0 +1,150 @@
+=============================
+Huawei kernel self protection
+=============================
+
+Cred guard
+----------
+- random cred's magic.
+  most kernel exploit try to find some offsets in struct cred,
+  but it depends on CONFIG_DEBUG_CREDENTIALS, then need to compute
+  the right offset by that kernel config, so mostly the exploit code
+  is something like that:
+  if (tmp0 == 0x43736564 || tmp0 == 0x44656144)
+        i += 4;
+- detect shellcode like:
+  commit_creds(prepare_kernel_cred(0));
+  the common kernel code is never write like that.
+
+
+Namespace Guard
+---------------
+This feature detects pid namespace escape via kernel exploits.
+The current public method to bypass namespace is hijack init_nsproxy
+to current process:
+  switch_task_namespaces_p(current, init_nsproxy_p);
+  commit_creds(prepare_kernel_cred(0)); 
+
+
+Rop stack pivot
+--------------
+- user process stack can't be is mmap area.
+- check kernel stack range at each system call ret.
+  the rsp pointer can point below __PAGE_OFFSET.
+
+Slub harden
+-----------
+- redzone/poison randomization.
+- double free enhance.
+  old slub can only detect continuous double free bugs.
+  kfree(obj1)
+  kfree(obj1)
+
+  hksp can detect no continuous double/multi free bugs.
+  kfree(obj1)
+  kfree(obj2)
+  kfree(obj1)
+
+  or
+
+  kfree(obj1)
+  kfree(obj2)
+  kfree(obj3)
+  kfree(obj1)
+- clear the next object address information when using kmalloc function.
+ 
+Proc info leak
+--------------
+Protect important file with no read access for non root user.
+set /proc/{modules,keys,key-users},
+/proc/sys/kernel/{panic,panic_on_oops,dmesg_restrict,kptr_restrict,keys},
+/proc/sys/vm/{mmap_min_addr} as 0640.
+
+Aslr hardended
+--------------
+User stack aslr enhanced.
+Old user process's stack is between 0-1G on 64bit.
+the actually random range is 0-2^24.
+we introduce STACK_RND_BITS to control the range dynamically.
+
+echo "24" > /proc/sys/vm/stack_rnd_bits
+
+we also randomize the space between elf_info and environ.
+And randomize the space between stack and elf_info.
+
+Ptrace hardened
+---------------
+Disallow attach to non child process.
+This can prevent process memory inject via ptrace.
+
+Sm*p hardened
+-------------
+Check smap&smep when return from kernel space via a syscall,
+this can detect some kernel exploit code to bypass smap & smep
+feature via rop attack technology.
+
+Raw socket enhance
+------------------
+Enhance raw socket for ipv4 protocol.
+- TCP data cannot be sent over raw sockets.
+  echo 1 > /proc/sys/net/ipv4/raw_tcp_disabled
+- UDP datagrams with an invalid source address cannot be sent
+  over raw sockets. The IP source address for any outgoing UDP
+  datagram must exist on a network interface or the datagram is
+  dropped. This change was made to limit the ability of malicious
+  code to create distributed denial-of-service attacks and limits
+  the ability to send spoofed packets (TCP/IP packets with a forged
+  source IP address).
+  echo 1 > /proc/sys/net/ipv4/raw_udp_verify
+- A call to the bind function with a raw socket for the IPPROTO_TCP
+  protocol is not allowed.
+  echo 1 > /proc/sys/net/ipv4/raw_bind_disabled
+
+Kernel self guard
+-----------------
+Ksguard is an anti rootkit tool on kernel level.
+Currently it can detect 4 types of kernel rootkits,
+These are the most popluar rootkits type on unix world.
+
+- keyboard notifer rootkits.
+- netfilter hooks rootkits.
+- tty sniffer rootkits and other DKOM(direct kernel object modify) rootkits.
+- system call table hijack rootkits.
+
+Install:
+/sbin/insmod /lib/modules/5.6.7/kernel/security/ksguard/ksguard.ko
+
+Feature:
+Detect keyboard notifer rootkits:
+echo "1" > /proc/ksguard/state
+
+Detect netfilter hooks rootkits:
+echo "2" > /proc/ksguard/state
+
+Detect tty sniffer rootkits:
+echo "3" > /proc/ksguard/state
+
+Detect syscall table pointer:
+echo "4" > /proc/ksguard/state
+
+Arbitrary code guard
+--------------------
+we extended the libc personality() to support:
+- mmap can't memory with PROT_WRITE|PROT_EXEC.
+- mprtect can't change PROT_WRITE to PROT_EXEC.
+
+Code integrity guard
+--------------------
+To support certificate for user process execve.
+it can prevent some internet explorer to load
+third party so librarys.
+
+Hide symbol
+-----------
+Hide symbols from /proc/kallsyms.
+
+
+
+
+
+
+

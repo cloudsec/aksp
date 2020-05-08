@@ -1,0 +1,2787 @@
+diff -urN linux-5.6.7/arch/Kconfig linux-5.6.7-new/arch/Kconfig
+--- linux-5.6.7/arch/Kconfig	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/arch/Kconfig	2020-05-07 20:26:40.371877407 -0700
+@@ -711,6 +711,34 @@
+ 	  and vice-versa 32-bit applications to call 64-bit mmap().
+ 	  Required for applications doing different bitness syscalls.
+ 
++config HAVE_ARCH_STACK_RND_BITS
++	bool
++
++config HAVE_ARCH_BRK_RND_BITS
++	bool
++
++config ARCH_STACK_RND_BITS
++	int
++
++config ARCH_BRK_RND_BITS
++	int
++
++config ARCH_STACK_RND_BITS_MIN
++	int
++	depends on HAVE_ARCH_STACK_RND_BITS
++
++config ARCH_STACK_RND_BITS_MAX
++	int
++	depends on HAVE_ARCH_STACK_RND_BITS
++
++config ARCH_BRK_RND_BITS_MIN
++	int
++	depends on HAVE_ARCH_BRK_RND_BITS
++
++config ARCH_BRK_RND_BITS_MAX
++	int
++	depends on HAVE_ARCH_BRK_RND_BITS
++
+ # This allows to use a set of generic functions to determine mmap base
+ # address by giving priority to top-down scheme only if the process
+ # is not in legacy mode (compat task, unlimited stack size or
+diff -urN linux-5.6.7/arch/x86/entry/common.c linux-5.6.7-new/arch/x86/entry/common.c
+--- linux-5.6.7/arch/x86/entry/common.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/arch/x86/entry/common.c	2020-05-07 00:31:02.550109872 -0700
+@@ -38,6 +38,12 @@
+ #define CREATE_TRACE_POINTS
+ #include <trace/events/syscalls.h>
+ 
++#ifdef CONFIG_HKSP_SMXP_HARDENED
++#include <asm/tlbflush.h>
++extern int hksp_smep_disabled;
++extern int hksp_smap_disabled;
++#endif
++
+ #ifdef CONFIG_CONTEXT_TRACKING
+ /* Called on entry from user mode with IRQs off. */
+ __visible inline void enter_from_user_mode(void)
+@@ -184,6 +190,28 @@
+ 	struct thread_info *ti = current_thread_info();
+ 	u32 cached_flags;
+ 
++#ifdef CONFIG_HKSP_SMXP_HARDENED
++#ifdef CONFIG_X86_SMAP
++        if (boot_cpu_has(X86_FEATURE_SMAP) &&
++                hksp_smap_disabled == 0) {
++                unsigned long cr4 = 0;
++
++                cr4 = cr4_read_shadow();
++                if (!(cr4 & X86_CR4_SMAP))
++                        printk("cr4 smap bit is cleared.\n");
++        }
++#endif
++
++        if (boot_cpu_has(X86_FEATURE_SMEP) &&
++                hksp_smep_disabled == 0) {
++                unsigned long cr4 = 0;
++
++                cr4 = cr4_read_shadow();
++                if (!(cr4 & X86_CR4_SMEP))
++                        printk("cr4 smep bit is cleared.\n");
++        }
++#endif
++
+ 	addr_limit_user_check();
+ 
+ 	lockdep_assert_irqs_disabled();
+diff -urN linux-5.6.7/arch/x86/include/asm/elf.h linux-5.6.7-new/arch/x86/include/asm/elf.h
+--- linux-5.6.7/arch/x86/include/asm/elf.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/arch/x86/include/asm/elf.h	2020-05-07 23:28:52.790073616 -0700
+@@ -321,9 +321,18 @@
+ 
+ #else /* CONFIG_X86_32 */
+ 
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++extern const int stack_rnd_bits_min;
++extern const int stack_rnd_bits_max;
++extern int stack_rnd_bits;
++
++#define __STACK_RND_MASK(is32bit) ((is32bit) ? 0x7ff : ((1UL << stack_rnd_bits) - 1))
++#define STACK_RND_MASK __STACK_RND_MASK(mmap_is_ia32())
++#else
+ /* 1GB for 64bit, 8MB for 32bit */
+ #define __STACK_RND_MASK(is32bit) ((is32bit) ? 0x7ff : 0x3fffff)
+ #define STACK_RND_MASK __STACK_RND_MASK(mmap_is_ia32())
++#endif
+ 
+ #define ARCH_DLINFO							\
+ do {									\
+diff -urN linux-5.6.7/arch/x86/Kconfig linux-5.6.7-new/arch/x86/Kconfig
+--- linux-5.6.7/arch/x86/Kconfig	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/arch/x86/Kconfig	2020-05-07 20:27:56.237368059 -0700
+@@ -142,6 +142,8 @@
+ 	select HAVE_ARCH_MMAP_RND_BITS		if MMU
+ 	select HAVE_ARCH_MMAP_RND_COMPAT_BITS	if MMU && COMPAT
+ 	select HAVE_ARCH_COMPAT_MMAP_BASES	if MMU && COMPAT
++        select HAVE_ARCH_STACK_RND_BITS         if MMU
++        select HAVE_ARCH_BRK_RND_BITS           if MMU
+ 	select HAVE_ARCH_PREL32_RELOCATIONS
+ 	select HAVE_ARCH_SECCOMP_FILTER
+ 	select HAVE_ARCH_THREAD_STRUCT_WHITELIST
+@@ -268,6 +270,32 @@
+ config ARCH_MMAP_RND_COMPAT_BITS_MAX
+ 	default 16
+ 
++config ARCH_STACK_RND_BITS
++	default 24
++
++config ARCH_STACK_RND_BITS_MIN
++        default 16 if 64BIT
++        default 16
++        depends on HKSP_ASLR_HARDENED
++
++config ARCH_STACK_RND_BITS_MAX
++        default 32 if 64BIT
++        default 24
++        depends on HKSP_ASLR_HARDENED
++
++config ARCH_BRK_RND_BITS
++	default 12
++
++config ARCH_BRK_RND_BITS_MIN
++        default 12 if 64BIT
++        default 12
++        depends on HKSP_ASLR_HARDENED
++
++config ARCH_BRK_RND_BITS_MAX
++        default 16 if 64BIT
++        default 24
++       	depends on HKSP_ASLR_HARDENED
++
+ config SBUS
+ 	bool
+ 
+diff -urN linux-5.6.7/arch/x86/kernel/cpu/common.c linux-5.6.7-new/arch/x86/kernel/cpu/common.c
+--- linux-5.6.7/arch/x86/kernel/cpu/common.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/arch/x86/kernel/cpu/common.c	2020-05-07 00:34:31.547942098 -0700
+@@ -294,34 +294,71 @@
+ }
+ __setup("nosmep", setup_disable_smep);
+ 
++#ifdef CONFIG_HKSP_SMXP_HARDENED
++int hksp_smep_disabled = 1;
++
++static __always_inline void setup_smep(struct cpuinfo_x86 *c)
++{
++        if (cpu_has(c, X86_FEATURE_SMEP)) {
++                cr4_set_bits(X86_CR4_SMEP);
++                hksp_smep_disabled = 0;
++        }
++}
++
++int hksp_smap_disabled = 1;
++static __init int setup_disable_smap(char *arg)
++{
++        setup_clear_cpu_cap(X86_FEATURE_SMAP);
++        return 1;
++}
++__setup("nosmap", setup_disable_smap);
++
++static __always_inline void setup_smap(struct cpuinfo_x86 *c)
++{
++        unsigned long eflags = native_save_fl();
++
++        /* This should have been cleared long ago */
++        BUG_ON(eflags & X86_EFLAGS_AC);
++
++        if (cpu_has(c, X86_FEATURE_SMAP)) {
++#ifdef CONFIG_X86_SMAP
++                cr4_set_bits(X86_CR4_SMAP);
++                hksp_smap_disabled = 0;
++#else
++                cr4_clear_bits(X86_CR4_SMAP);
++#endif
++        }
++}
++#else
+ static __always_inline void setup_smep(struct cpuinfo_x86 *c)
+ {
+-	if (cpu_has(c, X86_FEATURE_SMEP))
+-		cr4_set_bits(X86_CR4_SMEP);
++        if (cpu_has(c, X86_FEATURE_SMEP))
++                cr4_set_bits(X86_CR4_SMEP);
+ }
+ 
+ static __init int setup_disable_smap(char *arg)
+ {
+-	setup_clear_cpu_cap(X86_FEATURE_SMAP);
+-	return 1;
++        setup_clear_cpu_cap(X86_FEATURE_SMAP);
++        return 1;
+ }
+ __setup("nosmap", setup_disable_smap);
+ 
+ static __always_inline void setup_smap(struct cpuinfo_x86 *c)
+ {
+-	unsigned long eflags = native_save_fl();
++        unsigned long eflags = native_save_fl();
+ 
+-	/* This should have been cleared long ago */
+-	BUG_ON(eflags & X86_EFLAGS_AC);
++        /* This should have been cleared long ago */
++        BUG_ON(eflags & X86_EFLAGS_AC);
+ 
+-	if (cpu_has(c, X86_FEATURE_SMAP)) {
++        if (cpu_has(c, X86_FEATURE_SMAP)) {
+ #ifdef CONFIG_X86_SMAP
+-		cr4_set_bits(X86_CR4_SMAP);
++                cr4_set_bits(X86_CR4_SMAP);
+ #else
+-		cr4_clear_bits(X86_CR4_SMAP);
++                cr4_clear_bits(X86_CR4_SMAP);
+ #endif
+-	}
++        }
+ }
++#endif
+ 
+ static __always_inline void setup_umip(struct cpuinfo_x86 *c)
+ {
+diff -urN linux-5.6.7/arch/x86/kernel/process.c linux-5.6.7-new/arch/x86/kernel/process.c
+--- linux-5.6.7/arch/x86/kernel/process.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/arch/x86/kernel/process.c	2020-05-07 02:09:51.083088546 -0700
+@@ -46,6 +46,12 @@
+ 
+ #include "process.h"
+ 
++#if defined(CONFIG_HAVE_ARCH_BRK_RND_BITS) && defined(CONFIG_HKSP_ASLR_HARDENED)
++const int brk_rnd_bits_min = CONFIG_ARCH_BRK_RND_BITS_MIN;
++const int brk_rnd_bits_max = CONFIG_ARCH_BRK_RND_BITS_MAX;
++int brk_rnd_bits __read_mostly = CONFIG_ARCH_BRK_RND_BITS;
++#endif
++
+ /*
+  * per-CPU TSS segments. Threads are completely 'soft' on Linux,
+  * no more per-task TSS's. The TSS size is kept cacheline-aligned
+@@ -913,7 +919,11 @@
+ 
+ unsigned long arch_randomize_brk(struct mm_struct *mm)
+ {
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++       	return randomize_page(mm->brk, ((1UL << brk_rnd_bits) - 1) << PAGE_SHIFT);
++#else
+ 	return randomize_page(mm->brk, 0x02000000);
++#endif
+ }
+ 
+ /*
+diff -urN linux-5.6.7/arch/x86/mm/mmap.c linux-5.6.7-new/arch/x86/mm/mmap.c
+--- linux-5.6.7/arch/x86/mm/mmap.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/arch/x86/mm/mmap.c	2020-05-07 01:08:02.104325669 -0700
+@@ -81,7 +81,12 @@
+ 			       struct rlimit *rlim_stack)
+ {
+ 	unsigned long gap = rlim_stack->rlim_cur;
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++        /* add pads between elf_info and env, stack pointer and elf_info. */
++        unsigned long pad = stack_maxrandom_size(task_size) + stack_guard_gap + 8192*2;
++#else
+ 	unsigned long pad = stack_maxrandom_size(task_size) + stack_guard_gap;
++#endif
+ 	unsigned long gap_min, gap_max;
+ 
+ 	/* Values close to RLIM_INFINITY can overflow. */
+diff -urN linux-5.6.7/Documentation/security/hksp.rst linux-5.6.7-new/Documentation/security/hksp.rst
+--- linux-5.6.7/Documentation/security/hksp.rst	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/Documentation/security/hksp.rst	2020-05-09 00:32:29.619671135 -0700
+@@ -0,0 +1,150 @@
++=============================
++Huawei kernel self protection
++=============================
++
++Cred guard
++----------
++- random cred's magic.
++  most kernel exploit try to find some offsets in struct cred,
++  but it depends on CONFIG_DEBUG_CREDENTIALS, then need to compute
++  the right offset by that kernel config, so mostly the exploit code
++  is something like that:
++  if (tmp0 == 0x43736564 || tmp0 == 0x44656144)
++        i += 4;
++- detect shellcode like:
++  commit_creds(prepare_kernel_cred(0));
++  the common kernel code is never write like that.
++
++
++Namespace Guard
++---------------
++This feature detects pid namespace escape via kernel exploits.
++The current public method to bypass namespace is hijack init_nsproxy
++to current process:
++  switch_task_namespaces_p(current, init_nsproxy_p);
++  commit_creds(prepare_kernel_cred(0)); 
++
++
++Rop stack pivot
++--------------
++- user process stack can't be is mmap area.
++- check kernel stack range at each system call ret.
++  the rsp pointer can point below __PAGE_OFFSET.
++
++Slub harden
++-----------
++- redzone/poison randomization.
++- double free enhance.
++  old slub can only detect continuous double free bugs.
++  kfree(obj1)
++  kfree(obj1)
++
++  hksp can detect no continuous double/multi free bugs.
++  kfree(obj1)
++  kfree(obj2)
++  kfree(obj1)
++
++  or
++
++  kfree(obj1)
++  kfree(obj2)
++  kfree(obj3)
++  kfree(obj1)
++- clear the next object address information when using kmalloc function.
++ 
++Proc info leak
++--------------
++Protect important file with no read access for non root user.
++set /proc/{modules,keys,key-users},
++/proc/sys/kernel/{panic,panic_on_oops,dmesg_restrict,kptr_restrict,keys},
++/proc/sys/vm/{mmap_min_addr} as 0640.
++
++Aslr hardended
++--------------
++User stack aslr enhanced.
++Old user process's stack is between 0-1G on 64bit.
++the actually random range is 0-2^24.
++we introduce STACK_RND_BITS to control the range dynamically.
++
++echo "24" > /proc/sys/vm/stack_rnd_bits
++
++we also randomize the space between elf_info and environ.
++And randomize the space between stack and elf_info.
++
++Ptrace hardened
++---------------
++Disallow attach to non child process.
++This can prevent process memory inject via ptrace.
++
++Sm*p hardened
++-------------
++Check smap&smep when return from kernel space via a syscall,
++this can detect some kernel exploit code to bypass smap & smep
++feature via rop attack technology.
++
++Raw socket enhance
++------------------
++Enhance raw socket for ipv4 protocol.
++- TCP data cannot be sent over raw sockets.
++  echo 1 > /proc/sys/net/ipv4/raw_tcp_disabled
++- UDP datagrams with an invalid source address cannot be sent
++  over raw sockets. The IP source address for any outgoing UDP
++  datagram must exist on a network interface or the datagram is
++  dropped. This change was made to limit the ability of malicious
++  code to create distributed denial-of-service attacks and limits
++  the ability to send spoofed packets (TCP/IP packets with a forged
++  source IP address).
++  echo 1 > /proc/sys/net/ipv4/raw_udp_verify
++- A call to the bind function with a raw socket for the IPPROTO_TCP
++  protocol is not allowed.
++  echo 1 > /proc/sys/net/ipv4/raw_bind_disabled
++
++Kernel self guard
++-----------------
++Ksguard is an anti rootkit tool on kernel level.
++Currently it can detect 4 types of kernel rootkits,
++These are the most popluar rootkits type on unix world.
++
++- keyboard notifer rootkits.
++- netfilter hooks rootkits.
++- tty sniffer rootkits and other DKOM(direct kernel object modify) rootkits.
++- system call table hijack rootkits.
++
++Install:
++/sbin/insmod /lib/modules/5.6.7/kernel/security/ksguard/ksguard.ko
++
++Feature:
++Detect keyboard notifer rootkits:
++echo "1" > /proc/ksguard/state
++
++Detect netfilter hooks rootkits:
++echo "2" > /proc/ksguard/state
++
++Detect tty sniffer rootkits:
++echo "3" > /proc/ksguard/state
++
++Detect syscall table pointer:
++echo "4" > /proc/ksguard/state
++
++Arbitrary code guard
++--------------------
++we extended the libc personality() to support:
++- mmap can't memory with PROT_WRITE|PROT_EXEC.
++- mprtect can't change PROT_WRITE to PROT_EXEC.
++
++Code integrity guard
++--------------------
++To support certificate for user process execve.
++it can prevent some internet explorer to load
++third party so librarys.
++
++Hide symbol
++-----------
++Hide symbols from /proc/kallsyms.
++
++
++
++
++
++
++
+diff -urN linux-5.6.7/fs/binfmt_elf.c linux-5.6.7-new/fs/binfmt_elf.c
+--- linux-5.6.7/fs/binfmt_elf.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/fs/binfmt_elf.c	2020-05-08 23:54:03.001126674 -0700
+@@ -42,6 +42,8 @@
+ #include <linux/cred.h>
+ #include <linux/dax.h>
+ #include <linux/uaccess.h>
++#include <linux/verification.h>
++#include <crypto/public_key.h>
+ #include <asm/param.h>
+ #include <asm/page.h>
+ 
+@@ -676,6 +678,125 @@
+ 	return error;
+ }
+ 
++#ifdef CONFIG_HKSP_CODE_INTEGRITY_GUARD
++#define MODULE_SIG_STRING       "~Module signature appended~\n"
++
++enum pkey_id_type {
++        PKEY_ID_PGP,            /* OpenPGP generated key ID */
++        PKEY_ID_X509,           /* X.509 arbitrary subjectKeyIdentifier */
++        PKEY_ID_PKCS7,          /* Signature in PKCS#7 message */
++};
++
++/*
++ * Module signature information block.
++ *
++ * The constituents of the signature section are, in order:
++ *
++ *      - Signer's name
++ *      - Key identifier
++ *      - Signature data
++ *      - Information block
++ */
++struct module_signature {
++        u8      algo;           /* Public-key crypto algorithm [0] */
++        u8      hash;           /* Digest algorithm [0] */
++        u8      id_type;        /* Key identifier type [PKEY_ID_PKCS7] */
++        u8      signer_len;     /* Length of signer's name [0] */
++        u8      key_id_len;     /* Length of key identifier [0] */
++        u8      __pad[3];
++        __be32  sig_len;        /* Length of signature data */
++};
++
++static int elf_sig_check(struct elfhdr *elf_ex, struct file *file)
++{
++        struct module_signature ms;
++        struct inode *inode;
++        size_t modlen, sig_len;
++        void *mod;
++        unsigned long markerlen;
++        char marker_buf[32];
++        loff_t pos = 0;
++
++        if (!(current->personality & CODE_INTEGRITY_GUARD))
++                return 0;
++
++        markerlen = sizeof(MODULE_SIG_STRING) - 1;
++        inode = file->f_path.dentry->d_inode;
++        printk("file size: %d\n", inode->i_size);
++
++        /* first read the signer magic. */
++        pos = inode->i_size - markerlen;
++        if (kernel_read(file, marker_buf, markerlen, &pos) <= 0)
++                return -1;
++
++        if (memcmp(marker_buf, MODULE_SIG_STRING, markerlen))
++                return -1;
++
++        modlen = inode->i_size - markerlen;
++        if (modlen <= sizeof(ms))
++                return -EBADMSG;
++
++        /* then read the module_signature struct .*/
++        pos = modlen - sizeof(ms);
++        if (kernel_read(file, &ms, sizeof(ms), &pos) <= 0)
++                return -1;
++
++        modlen -= sizeof(ms);
++        sig_len = be32_to_cpu(ms.sig_len);
++        if (sig_len >= modlen)
++                return -EBADMSG;
++
++        if (ms.id_type != PKEY_ID_PKCS7) {
++                pr_err("Module is not signed with expected PKCS#7 message\n");
++                return -ENOPKG;
++        }
++
++        if (ms.algo != 0 ||
++            ms.hash != 0 ||
++            ms.signer_len != 0 ||
++            ms.key_id_len != 0 ||
++            ms.__pad[0] != 0 ||
++            ms.__pad[1] != 0 ||
++            ms.__pad[2] != 0) {
++                pr_err("PKCS#7 signature info has unexpected non-zero params\n");
++                return -EBADMSG;
++        }
++        printk("sig_len: %d\n", sig_len);
++
++        mod = kmalloc(modlen, GFP_KERNEL);
++        if (!mod)
++                return -1;
++
++        pos = 0;
++        if (kernel_read(file, mod, modlen, &pos) <= 0)
++                goto out;
++
++        modlen -= sig_len;
++        if (verify_pkcs7_signature(mod, modlen, mod + modlen, sig_len,
++                                      VERIFY_USE_SECONDARY_KEYRING,
++                                      VERIFYING_MODULE_SIGNATURE,
++                                      NULL, NULL) < 0) {
++
++                printk("signature verify failed.\n");
++                goto out;
++        }
++        printk("signature verify successful.\n");
++
++        kfree(mod);
++        return 0;
++
++out:
++        if (mod)
++                kfree(mod);
++        return -1;
++}
++#else
++static int elf_sig_check(struct elfhdr *elf_ex, struct file *file)
++{
++        return 0;
++}
++#endif
++
+ /*
+  * These are the functions used to load ELF style executables and shared
+  * libraries.  There is no binary dependent code anywhere else.
+@@ -725,6 +846,9 @@
+ 	if (!bprm->file->f_op->mmap)
+ 		goto out;
+ 
++        if (elf_sig_check(elf_ex, bprm->file) == -1)
++                goto out;
++
+ 	elf_phdata = load_elf_phdrs(elf_ex, bprm->file);
+ 	if (!elf_phdata)
+ 		goto out;
+@@ -868,6 +992,13 @@
+ 	if (retval < 0)
+ 		goto out_free_dentry;
+ 	
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++        /* randomize the space between elf_info and environ. */
++        current->mm->start_stack = randomize_stack_environ(bprm->p);
++#else
++        current->mm->start_stack = bprm->p;
++#endif
++
+ 	elf_bss = 0;
+ 	elf_brk = 0;
+ 
+@@ -1104,7 +1235,13 @@
+ 	mm->start_code = start_code;
+ 	mm->start_data = start_data;
+ 	mm->end_data = end_data;
+-	mm->start_stack = bprm->p;
++
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++        /* randomize the space between stack and elf_info . */
++        current->mm->start_stack = randomize_stack_environ(bprm->p);
++#else
++        current->mm->start_stack = bprm->p;
++#endif
+ 
+ 	if ((current->flags & PF_RANDOMIZE) && (randomize_va_space > 1)) {
+ 		/*
+diff -urN linux-5.6.7/fs/exec.c linux-5.6.7-new/fs/exec.c
+--- linux-5.6.7/fs/exec.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/fs/exec.c	2020-05-07 20:29:20.291911696 -0700
+@@ -72,6 +72,12 @@
+ 
+ #include <trace/events/sched.h>
+ 
++#if defined(CONFIG_HAVE_ARCH_STACK_RND_BITS) && defined(CONFIG_HKSP_ASLR_HARDENED)
++const int stack_rnd_bits_min = CONFIG_ARCH_STACK_RND_BITS_MIN;
++const int stack_rnd_bits_max = CONFIG_ARCH_STACK_RND_BITS_MAX;
++int stack_rnd_bits __read_mostly = CONFIG_ARCH_STACK_RND_BITS;
++#endif
++
+ int suid_dumpable = 0;
+ 
+ static LIST_HEAD(formats);
+diff -urN linux-5.6.7/fs/proc/hidesym.c linux-5.6.7-new/fs/proc/hidesym.c
+--- linux-5.6.7/fs/proc/hidesym.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/fs/proc/hidesym.c	2020-05-09 00:19:33.097746152 -0700
+@@ -0,0 +1,165 @@
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++#include <linux/uaccess.h>
++
++struct hide_sym {
++	char sym_name[64];
++	struct list_head list;
++};
++
++static struct list_head hide_sym_head;
++static int hide_sym_len = 0;
++static spinlock_t hide_sym_lock;
++
++int add_sym_node(char *sym_name)
++{
++	struct hide_sym *new_sym;
++
++        new_sym = kmalloc(sizeof(struct hide_sym), GFP_KERNEL);
++        if (!new_sym)
++		return -1;
++
++        strcpy(new_sym->sym_name, sym_name);
++
++        spin_lock(&hide_sym_lock);
++        list_add_tail(&new_sym->list, &hide_sym_head);
++        hide_sym_len += strlen(sym_name);
++        spin_unlock(&hide_sym_lock);
++
++	return 0;
++}
++
++int remove_sym_node(char *sym_name)
++{
++	struct hide_sym *sym, *p;
++
++	spin_lock(&hide_sym_lock);
++	list_for_each_entry_safe(sym, p, &hide_sym_head, list) {
++		if (!strcmp(sym->sym_name, sym_name)) {
++			list_del(&sym->list);
++        		hide_sym_len -= strlen(sym_name);
++			spin_unlock(&hide_sym_lock);
++			return 0;
++		}
++	}
++	spin_unlock(&hide_sym_lock);
++
++	return -1;
++}
++
++int search_hide_symbol(char *sym_name)
++{
++	struct hide_sym *sym;
++
++	spin_lock(&hide_sym_lock);
++	list_for_each_entry(sym, &hide_sym_head, list) {
++		if (!strncmp(sym->sym_name, sym_name, strlen(sym_name))) {
++			spin_unlock(&hide_sym_lock);
++			return 0;
++		}
++	}
++	spin_unlock(&hide_sym_lock);
++
++	return -1;
++}
++EXPORT_SYMBOL(search_hide_symbol);
++
++static ssize_t hidesym_read(struct file *file, char __user *buf,
++                      size_t len, loff_t *offset)
++{
++	struct hide_sym *sym;
++        ssize_t n = 0;
++
++	if (!len || *offset >= hide_sym_len)
++		return 0;
++
++	list_for_each_entry(sym, &hide_sym_head, list) {
++		int sym_len;
++
++		sym_len = strlen(sym->sym_name);
++		if (n >= len)
++			return n;
++
++        	if (copy_to_user(buf + n, sym->sym_name, sym_len))
++                	return n;
++
++        	*offset += sym_len;
++        	n += sym_len;
++	}
++
++        return n;
++}
++
++static ssize_t hidesym_write(struct file *file, const char __user *buf,
++                      size_t len, loff_t *offset)
++{
++	char sym_name[64];
++
++	if (len >= 64 || len <= 2)
++		return -1;
++
++        if (copy_from_user(&sym_name, buf, len))
++                return -1;
++	sym_name[len - 1] = '\n';
++	sym_name[len] = '\0';
++
++	if (sym_name[1] != ':') {
++		printk("wrong hidesym type %c.\n", sym_name[1]);
++		return -1;
++	}
++
++	if (sym_name[0] == '0') {
++		if (add_sym_node(&sym_name[2]) == -1)
++			return -1;
++	}
++	else if (sym_name[0] == '1') {
++		if (remove_sym_node(&sym_name[2]) == -1)
++			return -1;
++	}
++	else {
++		printk("wrong hidesym type.\n");
++		return -1;
++	}
++
++        *offset += len;
++        return len;
++}
++
++static int hidesym_open(struct inode *inode, struct file *filp)
++{
++        return 0;
++}
++
++static int hidesym_release(struct inode *inode, struct file *file)
++{
++        return 0;
++}
++
++static const struct file_operations hidesym_ops = {
++        .owner = THIS_MODULE,
++        .open = hidesym_open,
++        .read = hidesym_read,
++        .write = hidesym_write,
++        .release = hidesym_release,
++        .llseek = default_llseek,
++};
++
++int hide_symbol_init(void)
++{
++        struct proc_dir_entry *entry;
++
++        entry = proc_create("hidesym", 0600, NULL, &hidesym_ops);
++        if (!entry)
++		panic("hide symbol init failed.\n");
++
++	INIT_LIST_HEAD(&hide_sym_head);
++	spin_lock_init(&hide_sym_lock);
++
++	return 0;
++}
++EXPORT_SYMBOL(hide_symbol_init);
+diff -urN linux-5.6.7/fs/proc/Makefile linux-5.6.7-new/fs/proc/Makefile
+--- linux-5.6.7/fs/proc/Makefile	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/fs/proc/Makefile	2020-05-09 00:20:41.505823398 -0700
+@@ -34,3 +34,4 @@
+ proc-$(CONFIG_PRINTK)	+= kmsg.o
+ proc-$(CONFIG_PROC_PAGE_MONITOR)	+= page.o
+ proc-$(CONFIG_BOOT_CONFIG)	+= bootconfig.o
++proc-$(CONFIG_HKSP_HIDESYM)  	+= hidesym.o
+diff -urN linux-5.6.7/fs/proc/root.c linux-5.6.7-new/fs/proc/root.c
+--- linux-5.6.7/fs/proc/root.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/fs/proc/root.c	2020-05-09 00:24:36.187534631 -0700
+@@ -47,6 +47,10 @@
+ 	{}
+ };
+ 
++#ifdef CONFIG_HKSP_HIDESYM
++extern int hide_symbol_init(void);
++#endif
++
+ static int proc_parse_param(struct fs_context *fc, struct fs_parameter *param)
+ {
+ 	struct proc_fs_context *ctx = fc->fs_private;
+@@ -228,6 +232,9 @@
+ 	proc_sys_init();
+ 
+ 	register_filesystem(&proc_fs_type);
++#ifdef CONFIG_HKSP_HIDESYM
++        hide_symbol_init();
++#endif
+ }
+ 
+ static int proc_root_getattr(const struct path *path, struct kstat *stat,
+diff -urN linux-5.6.7/include/linux/cred.h linux-5.6.7-new/include/linux/cred.h
+--- linux-5.6.7/include/linux/cred.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/linux/cred.h	2020-05-08 20:31:53.025489389 -0700
+@@ -113,7 +113,7 @@
+ #ifdef CONFIG_DEBUG_CREDENTIALS
+ 	atomic_t	subscribers;	/* number of processes subscribed */
+ 	void		*put_addr;
+-	unsigned	magic;
++	unsigned long	magic;
+ #define CRED_MAGIC	0x43736564
+ #define CRED_MAGIC_DEAD	0x44656144
+ #endif
+diff -urN linux-5.6.7/include/linux/mm.h linux-5.6.7-new/include/linux/mm.h
+--- linux-5.6.7/include/linux/mm.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/linux/mm.h	2020-05-07 22:45:45.657777830 -0700
+@@ -2310,6 +2310,10 @@
+ 
+ unsigned long randomize_stack_top(unsigned long stack_top);
+ 
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++unsigned long randomize_stack_environ(unsigned long stack_top);
++#endif
++
+ extern unsigned long get_unmapped_area(struct file *, unsigned long, unsigned long, unsigned long, unsigned long);
+ 
+ extern unsigned long mmap_region(struct file *file, unsigned long addr,
+diff -urN linux-5.6.7/include/linux/sched.h linux-5.6.7-new/include/linux/sched.h
+--- linux-5.6.7/include/linux/sched.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/linux/sched.h	2020-05-08 20:32:56.093320548 -0700
+@@ -887,6 +887,9 @@
+ 	struct key			*cached_requested_key;
+ #endif
+ 
++#ifdef CONFIG_DEBUG_CREDENTIALS
++       	unsigned long                   cred_magic;
++#endif
+ 	/*
+ 	 * executable name, excluding path.
+ 	 *
+diff -urN linux-5.6.7/include/linux/slab.h linux-5.6.7-new/include/linux/slab.h
+--- linux-5.6.7/include/linux/slab.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/linux/slab.h	2020-05-08 03:08:10.383648749 -0700
+@@ -120,6 +120,13 @@
+ /* Slab deactivation flag */
+ #define SLAB_DEACTIVATED	((slab_flags_t __force)0x10000000U)
+ 
++#ifdef CONFIG_HKSP_SLAB_HARDENED
++/* Panic if slab debug system found any memory corruptions. */
++#define SLAB_HARDENED           ((slab_flags_t __force)0x100000000U)
++#else
++#define SLAB_HARDENED          0
++#endif
++
+ /*
+  * ZERO_SIZE_PTR will be returned for zero sized kmalloc requests.
+  *
+diff -urN linux-5.6.7/include/linux/slub_def.h linux-5.6.7-new/include/linux/slub_def.h
+--- linux-5.6.7/include/linux/slub_def.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/linux/slub_def.h	2020-05-08 03:08:51.499844692 -0700
+@@ -139,6 +139,10 @@
+ 	unsigned int useroffset;	/* Usercopy region offset */
+ 	unsigned int usersize;		/* Usercopy region size */
+ 
++#ifdef CONFIG_HKSP_SLAB_HARDENED
++       unsigned long random_red;
++#endif
++
+ 	struct kmem_cache_node *node[MAX_NUMNODES];
+ };
+ 
+diff -urN linux-5.6.7/include/linux/syscalls.h linux-5.6.7-new/include/linux/syscalls.h
+--- linux-5.6.7/include/linux/syscalls.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/linux/syscalls.h	2020-05-08 20:02:09.848982260 -0700
+@@ -258,6 +258,15 @@
+  */
+ static inline void addr_limit_user_check(void)
+ {
++#ifdef CONFIG_HKSP_ROP_STACK_PIVOT
++       	unsigned long long sp;
++
++       	if ((unsigned long long)&sp < __PAGE_OFFSET) {
++               	printk("kernel stack has been corrupted.\n");
++               	//force_sig(SIGKILL, current);
++       	}
++#endif
++
+ #ifdef TIF_FSCHECK
+ 	if (!test_thread_flag(TIF_FSCHECK))
+ 		return;
+diff -urN linux-5.6.7/include/net/netns/ipv4.h linux-5.6.7-new/include/net/netns/ipv4.h
+--- linux-5.6.7/include/net/netns/ipv4.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/net/netns/ipv4.h	2020-05-06 20:13:35.373299444 -0700
+@@ -107,6 +107,11 @@
+ #ifdef CONFIG_NET_L3_MASTER_DEV
+ 	int sysctl_raw_l3mdev_accept;
+ #endif
++#ifdef CONFIG_HKSP_ENHANCE_RAW_SOCKET
++	int sysctl_raw_bind_disabled;
++	int sysctl_raw_tcp_disabled;
++	int sysctl_raw_udp_verify;
++#endif
+ 	int sysctl_tcp_early_demux;
+ 	int sysctl_udp_early_demux;
+ 
+diff -urN linux-5.6.7/include/uapi/linux/personality.h linux-5.6.7-new/include/uapi/linux/personality.h
+--- linux-5.6.7/include/uapi/linux/personality.h	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/include/uapi/linux/personality.h	2020-05-08 23:04:11.804470674 -0700
+@@ -22,6 +22,12 @@
+ 	WHOLE_SECONDS =		0x2000000,
+ 	STICKY_TIMEOUTS	=	0x4000000,
+ 	ADDR_LIMIT_3GB = 	0x8000000,
++#ifdef CONFIG_HKSP_ARBITRARY_CODE_GUARD
++       	ARBITRARY_CODE_GUARD =  0x10000000,     /* arbitrary code guard. */
++#endif
++#ifdef CONFIG_HKSP_CODE_INTEGRITY_GUARD
++       	CODE_INTEGRITY_GUARD =  0x20000000,     /* integrity code guard. */
++#endif
+ };
+ 
+ /*
+diff -urN linux-5.6.7/kernel/cred.c linux-5.6.7-new/kernel/cred.c
+--- linux-5.6.7/kernel/cred.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/kernel/cred.c	2020-05-08 22:27:33.025672296 -0700
+@@ -42,7 +42,6 @@
+ 	.usage			= ATOMIC_INIT(4),
+ #ifdef CONFIG_DEBUG_CREDENTIALS
+ 	.subscribers		= ATOMIC_INIT(2),
+-	.magic			= CRED_MAGIC,
+ #endif
+ 	.uid			= GLOBAL_ROOT_UID,
+ 	.gid			= GLOBAL_ROOT_GID,
+@@ -137,6 +136,10 @@
+ 
+ 	BUG_ON(atomic_read(&cred->usage) != 0);
+ #ifdef CONFIG_DEBUG_CREDENTIALS
++       	if (cred->magic != init_cred.magic) {
++               	printk("wrong cred magic: 0x%x\n", cred->magic);
++       	}
++
+ 	BUG_ON(read_cred_subscribers(cred) != 0);
+ 	cred->magic = CRED_MAGIC_DEAD;
+ 	cred->put_addr = __builtin_return_address(0);
+@@ -220,7 +223,7 @@
+ 
+ 	atomic_set(&new->usage, 1);
+ #ifdef CONFIG_DEBUG_CREDENTIALS
+-	new->magic = CRED_MAGIC;
++	new->magic = init_cred.magic;
+ #endif
+ 
+ 	if (security_cred_alloc_blank(new, GFP_KERNEL_ACCOUNT) < 0)
+@@ -655,6 +658,10 @@
+  */
+ void __init cred_init(void)
+ {
++#ifdef CONFIG_DEBUG_CREDENTIALS
++        init_cred.magic = get_random_long();
++        printk("init cred magic: 0x%llx\n", init_cred.magic);
++#endif
+ 	/* allocate a slab in which we can store credentials */
+ 	cred_jar = kmem_cache_create("cred_jar", sizeof(struct cred), 0,
+ 			SLAB_HWCACHE_ALIGN|SLAB_PANIC|SLAB_ACCOUNT, NULL);
+@@ -689,10 +696,23 @@
+ 
+ 	kdebug("prepare_kernel_cred() alloc %p", new);
+ 
+-	if (daemon)
++	if (daemon) {
+ 		old = get_task_cred(daemon);
+-	else
++	} else {
++#ifdef CONFIG_HKSP_CREDENTIALS_GUARD
++                u64 addr = (u64)__builtin_return_address(0);
++
++                if (addr <= TASK_SIZE) {
++                        printk("warning return address: 0x%llx\t0x%llx\n", addr, commit_creds);
++                }
++
++                if ((addr >= (u64)_stext && addr <= (u64)_etext) ||
++                        (addr >= MODULES_VADDR && addr <= MODULES_END)) {
++                        printk("return address: 0x%llx\t0x%llx\n", addr, commit_creds);
++		}
++#endif
+ 		old = get_cred(&init_cred);
++	}
+ 
+ 	validate_creds(old);
+ 
+@@ -789,7 +809,7 @@
+ 
+ bool creds_are_invalid(const struct cred *cred)
+ {
+-	if (cred->magic != CRED_MAGIC)
++	if (cred->magic != init_cred.magic)
+ 		return true;
+ 	return false;
+ }
+diff -urN linux-5.6.7/kernel/exit.c linux-5.6.7-new/kernel/exit.c
+--- linux-5.6.7/kernel/exit.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/kernel/exit.c	2020-05-08 22:25:09.465326364 -0700
+@@ -69,6 +69,8 @@
+ #include <asm/pgtable.h>
+ #include <asm/mmu_context.h>
+ 
++extern void check_pid_ns(void);
++
+ static void __unhash_process(struct task_struct *p, bool group_dead)
+ {
+ 	nr_threads--;
+@@ -708,6 +710,41 @@
+ static inline void check_stack_usage(void) {}
+ #endif
+ 
++#ifdef CONFIG_HKSP_ROP_STACK_PIVOT
++void check_stack_pivot(void)
++{
++        unsigned long sp;
++
++        sp = *(unsigned long *)
++                ((((unsigned long)&sp + THREAD_SIZE - 1) & ~(THREAD_SIZE - 1)) - TOP_OF_KERNEL_STACK_PADDING - 8);
++
++        if (!current->mm)
++                return ;
++
++        if (sp <= current->mm->mmap_base &&
++                current->mm->start_stack >= current->mm->mmap_base) {
++                const struct cred *cred = current_real_cred();
++
++                if (uid_eq(cred->uid, GLOBAL_ROOT_UID) ||
++                        gid_eq(cred->gid, GLOBAL_ROOT_GID) ||
++                        uid_eq(cred->euid, GLOBAL_ROOT_UID) ||
++                        cred->uid.val < 1000)
++                        return ;
++
++                if (printk_ratelimit()) {
++                        printk("parent %s(%d)\n", current->real_parent->comm, current->real_parent->pid);
++                        printk("uid=%d, euid=%d, suid=%d, fsuid=%d,gid=%d, "
++                                "0x%llx, 0x%llx, 0x%llx, 0x%llx, 0x%llx\n",
++                                cred->uid, cred->euid, cred->suid, cred->fsuid, cred->gid,
++                                cred->cap_inheritable, cred->cap_permitted,
++                                cred->cap_effective, cred->cap_bset, cred->cap_ambient);
++                        printk("%s(%d) stack base pivot detected(rsp: 0x%llx below 0x%llx).\n",
++                                current->comm, current->pid, sp, current->mm->mmap_base);
++                }
++        }
++}
++#endif
++
+ void __noreturn do_exit(long code)
+ {
+ 	struct task_struct *tsk = current;
+@@ -715,6 +752,10 @@
+ 
+ 	profile_task_exit(tsk);
+ 	kcov_task_exit(tsk);
++	check_pid_ns();
++#ifdef CONFIG_HKSP_ROP_STACK_PIVOT
++	check_stack_pivot();
++#endif
+ 
+ 	WARN_ON(blk_needs_flush_plug(tsk));
+ 
+diff -urN linux-5.6.7/kernel/kallsyms.c linux-5.6.7-new/kernel/kallsyms.c
+--- linux-5.6.7/kernel/kallsyms.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/kernel/kallsyms.c	2020-05-09 00:22:10.860271204 -0700
+@@ -26,6 +26,10 @@
+ #include <linux/ftrace.h>
+ #include <linux/compiler.h>
+ 
++#ifdef CONFIG_HKSP_HIDESYM
++extern int search_hide_symbol(char *sym_name);
++#endif
++
+ /*
+  * These will be re-linked against their real values
+  * during the second link stage.
+@@ -604,6 +608,10 @@
+ 
+ 	value = iter->show_value ? (void *)iter->value : NULL;
+ 
++#ifdef CONFIG_HKSP_HIDESYM
++        if (!search_hide_symbol(iter->name))
++                return 0;
++#endif
+ 	if (iter->module_name[0]) {
+ 		char type;
+ 
+diff -urN linux-5.6.7/kernel/module.c linux-5.6.7-new/kernel/module.c
+--- linux-5.6.7/kernel/module.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/kernel/module.c	2020-05-08 00:58:54.524396008 -0700
+@@ -4363,7 +4363,12 @@
+ 
+ static int __init proc_modules_init(void)
+ {
++#ifdef CONFIG_HKSP_PROC_INFO_LEAK
++       	proc_create("modules", S_IRUSR, NULL, &modules_proc_ops);
++#else
+ 	proc_create("modules", 0, NULL, &modules_proc_ops);
++#endif
++
+ 	return 0;
+ }
+ module_init(proc_modules_init);
+diff -urN linux-5.6.7/kernel/pid_namespace.c linux-5.6.7-new/kernel/pid_namespace.c
+--- linux-5.6.7/kernel/pid_namespace.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/kernel/pid_namespace.c	2020-05-08 22:25:05.964357910 -0700
+@@ -145,6 +145,33 @@
+ 	call_rcu(&ns->rcu, delayed_free_pidns);
+ }
+ 
++#ifdef CONFIG_HKSP_NS_GUARD
++void check_pid_ns(void)
++{
++        struct task_struct *tsk = current;
++
++        task_lock(tsk);
++        if (tsk->nsproxy == &init_nsproxy) {
++                const struct cred *cred = tsk->real_cred;
++                struct pid *pid = task_pid(tsk);
++
++                if ((uid_eq(cred->uid, GLOBAL_ROOT_UID) ||
++                        gid_eq(cred->gid, GLOBAL_ROOT_GID)) &&
++                        pid->level != 0) {
++                        printk("task %s(%d) in init namespace, but has %d pid levels.\n",
++                                tsk->comm, tsk->pid, pid->level);
++                }
++        }
++        task_unlock(tsk);
++}
++EXPORT_SYMBOL_GPL(check_pid_ns);
++#else
++void check_pid_ns(void)
++{
++}
++EXPORT_SYMBOL_GPL(check_pid_ns);
++#endif
++
+ struct pid_namespace *copy_pid_ns(unsigned long flags,
+ 	struct user_namespace *user_ns, struct pid_namespace *old_ns)
+ {
+diff -urN linux-5.6.7/kernel/ptrace.c linux-5.6.7-new/kernel/ptrace.c
+--- linux-5.6.7/kernel/ptrace.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/kernel/ptrace.c	2020-05-07 00:43:55.043008988 -0700
+@@ -1259,6 +1259,31 @@
+ 	}
+ 
+ 	if (request == PTRACE_ATTACH || request == PTRACE_SEIZE) {
++#ifdef CONFIG_HKSP_PTRACE_HARDENED
++                struct task_struct *p;
++                const struct cred *cred = current->real_cred;
++                int flag = 0;
++
++                if (!(uid_eq(cred->uid, GLOBAL_ROOT_UID) ||
++                        gid_eq(cred->gid, GLOBAL_ROOT_GID))) {
++                        read_lock(&tasklist_lock);
++                        list_for_each_entry(p, &current->children, children) {
++                                if (p == child) {
++                                        flag = 1;
++                                        break;
++                                }
++                        }
++                        read_unlock(&tasklist_lock);
++
++                        if (flag == 0) {
++                                printk("%s(%d) try to attach to non child %s(%d).\n",
++                                        current->comm, current->pid,
++                                        child->comm, child->pid);
++                                ret = -ESRCH;
++                                goto out;
++                        }
++                }
++#endif
+ 		ret = ptrace_attach(child, request, addr, data);
+ 		/*
+ 		 * Some architectures need to do book-keeping after
+diff -urN linux-5.6.7/kernel/sysctl.c linux-5.6.7-new/kernel/sysctl.c
+--- linux-5.6.7/kernel/sysctl.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/kernel/sysctl.c	2020-05-08 00:51:50.312616625 -0700
+@@ -206,6 +206,18 @@
+ 	SYSCTL_WRITES_STRICT		= 1,
+ };
+ 
++#if defined(CONFIG_HAVE_ARCH_BRK_RND_BITS) && defined(CONFIG_HKSP_ASLR_HARDENED)
++extern const int brk_rnd_bits_min;
++extern const int brk_rnd_bits_max;
++extern int brk_rnd_bits;
++#endif
++
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++extern unsigned long stack_guard_gap;
++extern unsigned long stack_guard_gap_min;
++extern unsigned long stack_guard_gap_max;
++#endif
++
+ static enum sysctl_writes_mode sysctl_writes_strict = SYSCTL_WRITES_STRICT;
+ 
+ static int proc_do_cad_pid(struct ctl_table *table, int write,
+@@ -826,7 +838,11 @@
+ 		.procname	= "panic_on_oops",
+ 		.data		= &panic_on_oops,
+ 		.maxlen		= sizeof(int),
++#ifdef CONFIG_HKSP_PROC_INFO_LEAK
++		.mode		= 0640,
++#else
+ 		.mode		= 0644,
++#endif
+ 		.proc_handler	= proc_dointvec,
+ 	},
+ 	{
+@@ -878,7 +894,11 @@
+ 		.procname	= "dmesg_restrict",
+ 		.data		= &dmesg_restrict,
+ 		.maxlen		= sizeof(int),
++#ifdef CONFIG_HKSP_PROC_INFO_LEAK
++		.mode		= 0640,
++#else
+ 		.mode		= 0644,
++#endif
+ 		.proc_handler	= proc_dointvec_minmax_sysadmin,
+ 		.extra1		= SYSCTL_ZERO,
+ 		.extra2		= SYSCTL_ONE,
+@@ -887,7 +907,11 @@
+ 		.procname	= "kptr_restrict",
+ 		.data		= &kptr_restrict,
+ 		.maxlen		= sizeof(int),
++#ifdef CONFIG_HKSP_PROC_INFO_LEAK
++		.mode		= 0640,
++#else
+ 		.mode		= 0644,
++#endif
+ 		.proc_handler	= proc_dointvec_minmax_sysadmin,
+ 		.extra1		= SYSCTL_ZERO,
+ 		.extra2		= &two,
+@@ -1625,7 +1649,11 @@
+ 		.procname	= "mmap_min_addr",
+ 		.data		= &dac_mmap_min_addr,
+ 		.maxlen		= sizeof(unsigned long),
++#ifdef CONFIG_HKSP_PROC_INFO_LEAK
++		.mode		= 0640,
++#else
+ 		.mode		= 0644,
++#endif
+ 		.proc_handler	= mmap_min_addr_handler,
+ 	},
+ #endif
+@@ -1732,6 +1760,28 @@
+ 		.extra2		= SYSCTL_ONE,
+ 	},
+ #endif
++#if defined(CONFIG_HAVE_ARCH_BRK_RND_BITS) && defined(CONFIG_HKSP_ASLR_HARDENED)
++        {
++                .procname       = "stack_rnd_bits",
++                .data           = &stack_rnd_bits,
++                .maxlen         = sizeof(stack_rnd_bits),
++                .mode           = 0600,
++                .proc_handler   = proc_dointvec_minmax,
++                .extra1         = (void *)&stack_rnd_bits_min,
++                .extra2         = (void *)&stack_rnd_bits_max,
++        },
++#endif
++#if defined(CONFIG_HAVE_ARCH_BRK_RND_BITS) && defined(CONFIG_HKSP_ASLR_HARDENED)
++        {
++                .procname       = "brk_rnd_bits",
++                .data           = &brk_rnd_bits,
++                .maxlen         = sizeof(brk_rnd_bits),
++                .mode           = 0600,
++                .proc_handler   = proc_dointvec_minmax,
++                .extra1         = (void *)&brk_rnd_bits_min,
++                .extra2         = (void *)&brk_rnd_bits_max,
++        },
++#endif
+ 	{ }
+ };
+ 
+diff -urN linux-5.6.7/mm/mmap.c linux-5.6.7-new/mm/mmap.c
+--- linux-5.6.7/mm/mmap.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/mm/mmap.c	2020-05-08 23:08:15.974540628 -0700
+@@ -1431,6 +1431,20 @@
+ 	vm_flags |= calc_vm_prot_bits(prot, pkey) | calc_vm_flag_bits(flags) |
+ 			mm->def_flags | VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC;
+ 
++#ifdef CONFIG_HKSP_ARBITRARY_CODE_GUARD
++        if (current->personality & ARBITRARY_CODE_GUARD) {
++                if ((vm_flags & (VM_WRITE | VM_EXEC)) == (VM_WRITE | VM_EXEC)) {
++                        printk("process %s was set in ACG mode.\n", current->comm);
++                        return -EPERM;
++                }
++
++                if (!(vm_flags & VM_EXEC))
++                        vm_flags &= ~VM_MAYEXEC;
++                else
++                        vm_flags &= ~VM_WRITE;
++        }
++#endif
++
+ 	if (flags & MAP_LOCKED)
+ 		if (!can_do_mlock())
+ 			return -EPERM;
+diff -urN linux-5.6.7/mm/mprotect.c linux-5.6.7-new/mm/mprotect.c
+--- linux-5.6.7/mm/mprotect.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/mm/mprotect.c	2020-05-08 23:09:07.980768522 -0700
+@@ -493,6 +493,12 @@
+ 	const bool rier = (current->personality & READ_IMPLIES_EXEC) &&
+ 				(prot & PROT_READ);
+ 
++#ifdef CONFIG_HKSP_ARBITRARY_CODE_GUARD
++        if ((prot & PROT_EXEC) && (current->personality & ARBITRARY_CODE_GUARD)) {
++                printk("process %s was set in ACG mode.\n", current->comm);
++                return -EINVAL;
++        }
++#endif
+ 	start = untagged_addr(start);
+ 
+ 	prot &= ~(PROT_GROWSDOWN|PROT_GROWSUP);
+diff -urN linux-5.6.7/mm/slub.c linux-5.6.7-new/mm/slub.c
+--- linux-5.6.7/mm/slub.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/mm/slub.c	2020-05-08 03:09:00.634888224 -0700
+@@ -167,8 +167,26 @@
+  */
+ #define MAX_PARTIAL 10
+ 
++#ifdef CONFIG_HKSP_SLAB_HARDENED
++#define SLAB_RED_RANDOM_INACTIVE(x)    (x->random_red & 0xff)
++#define SLAB_RED_RANDOM_ACTIVE(x)      ((x->random_red >> 8) & 0xff)
++#define SLAB_POISON_RANDOM_INUSE(x)    ((x->random_red >> 16) & 0xff)
++#define SLAB_POISON_RANDOM_FREE(x)     ((x->random_red >> 24) & 0xff)
++#define SLAB_POISON_RANDOM_END(x)      ((x->random_red >> 32) & 0xff)
++
++#define DEBUG_DEFAULT_FLAGS (SLAB_CONSISTENCY_CHECKS | SLAB_RED_ZONE | \
++                               SLAB_POISON | SLAB_STORE_USER | \
++                               SLAB_HARDENED)
++#else
++#define SLAB_RED_RANDOM_INACTIVE(x)    SLUB_RED_INACTIVE
++#define SLAB_RED_RANDOM_ACTIVE(x)      SLUB_RED_ACTIVE
++#define SLAB_POISON_RANDOM_INUSE(x)    POISON_INUSE
++#define SLAB_POISON_RANDOM_FREE(x)     POISON_FREE
++#define SLAB_POISON_RANDOM_END(x)      POISON_END
++
+ #define DEBUG_DEFAULT_FLAGS (SLAB_CONSISTENCY_CHECKS | SLAB_RED_ZONE | \
+ 				SLAB_POISON | SLAB_STORE_USER)
++#endif
+ 
+ /*
+  * These debug flags cannot use CMPXCHG because there might be consistency
+@@ -438,6 +456,31 @@
+ 	return false;
+ }
+ 
++#if defined(CONFIG_SLAB_FREELIST_HARDENED) && !defined(CONFIG_SLUB_DEBUG)
++void double_free_check(struct kmem_cache *s, struct page *page,
++                void *object, void *fp)
++{
++        void *p;
++        int nr = 0;
++
++        slab_lock(page);
++        p = fp;
++        while (p && nr <= page->objects) {
++                slab_unlock(page);
++                if (unlikely(p == object))
++                        panic("double free detected.\n");
++
++                p = get_freepointer(s, p);
++                nr++;
++        }
++        slab_unlock(page);
++}
++#else
++void double_free_check(struct kmem_cache *s, struct page *page,
++                void *object, void *fp) {}
++
++#endif
++
+ #ifdef CONFIG_SLUB_DEBUG
+ static unsigned long object_map[BITS_TO_LONGS(MAX_OBJS_PER_PAGE)];
+ static DEFINE_SPINLOCK(object_map_lock);
+@@ -708,6 +751,9 @@
+ {
+ 	slab_bug(s, "%s", reason);
+ 	print_trailer(s, page, object);
++
++        if (s->flags & SLAB_HARDENED)
++                panic(reason);
+ }
+ 
+ static __printf(3, 4) void slab_err(struct kmem_cache *s, struct page *page,
+@@ -722,6 +768,9 @@
+ 	slab_bug(s, "%s", buf);
+ 	print_page_info(page);
+ 	dump_stack();
++
++        if (s->flags & SLAB_HARDENED)
++                panic(buf);
+ }
+ 
+ static void init_object(struct kmem_cache *s, void *object, u8 val)
+@@ -732,8 +781,8 @@
+ 		memset(p - s->red_left_pad, val, s->red_left_pad);
+ 
+ 	if (s->flags & __OBJECT_POISON) {
+-		memset(p, POISON_FREE, s->object_size - 1);
+-		p[s->object_size - 1] = POISON_END;
++               	memset(p, SLAB_POISON_RANDOM_FREE(s), s->object_size - 1);
++               	p[s->object_size - 1] = SLAB_POISON_RANDOM_END(s);
+ 	}
+ 
+ 	if (s->flags & SLAB_RED_ZONE)
+@@ -831,7 +880,9 @@
+ 		return 1;
+ 
+ 	return check_bytes_and_report(s, page, p, "Object padding",
+-			p + off, POISON_INUSE, size_from_object(s) - off);
++                        p + off, SLAB_POISON_RANDOM_INUSE(s),
++                        size_from_object(s) - off);
++
+ }
+ 
+ /* Check the pad bytes at the end of a slab page */
+@@ -856,18 +907,18 @@
+ 
+ 	pad = end - remainder;
+ 	metadata_access_enable();
+-	fault = memchr_inv(pad, POISON_INUSE, remainder);
++	fault = memchr_inv(pad, SLAB_POISON_RANDOM_INUSE(s), remainder);
+ 	metadata_access_disable();
+ 	if (!fault)
+ 		return 1;
+-	while (end > fault && end[-1] == POISON_INUSE)
++	while (end > fault && end[-1] == SLAB_POISON_RANDOM_INUSE(s))
+ 		end--;
+ 
+ 	slab_err(s, page, "Padding overwritten. 0x%p-0x%p @offset=%tu",
+ 			fault, end - 1, fault - start);
+ 	print_section(KERN_ERR, "Padding ", pad, remainder);
+ 
+-	restore_bytes(s, "slab padding", POISON_INUSE, fault, end);
++	restore_bytes(s, "slab padding", SLAB_POISON_RANDOM_INUSE(s), fault, end);
+ 	return 0;
+ }
+ 
+@@ -888,17 +939,19 @@
+ 	} else {
+ 		if ((s->flags & SLAB_POISON) && s->object_size < s->inuse) {
+ 			check_bytes_and_report(s, page, p, "Alignment padding",
+-				endobject, POISON_INUSE,
++				endobject, SLAB_POISON_RANDOM_INUSE(s),
+ 				s->inuse - s->object_size);
+ 		}
+ 	}
+ 
+ 	if (s->flags & SLAB_POISON) {
+-		if (val != SLUB_RED_ACTIVE && (s->flags & __OBJECT_POISON) &&
++               	if (val != SLAB_RED_RANDOM_ACTIVE(s) &&
++                       	(s->flags & __OBJECT_POISON) &&
+ 			(!check_bytes_and_report(s, page, p, "Poison", p,
+-					POISON_FREE, s->object_size - 1) ||
++                                       	SLAB_POISON_RANDOM_FREE(s),
++                                       	s->object_size - 1) ||
+ 			 !check_bytes_and_report(s, page, p, "Poison",
+-				p + s->object_size - 1, POISON_END, 1)))
++				p + s->object_size - 1, SLAB_POISON_RANDOM_END(s), 1)))
+ 			return 0;
+ 		/*
+ 		 * check_pad_bytes cleans up on its own.
+@@ -906,7 +959,7 @@
+ 		check_pad_bytes(s, page, p);
+ 	}
+ 
+-	if (!s->offset && val == SLUB_RED_ACTIVE)
++	if (!s->offset && val == SLAB_RED_RANDOM_ACTIVE(s))
+ 		/*
+ 		 * Object and freepointer overlap. Cannot check
+ 		 * freepointer while object is allocated.
+@@ -1090,7 +1143,7 @@
+ 	if (!(s->flags & (SLAB_STORE_USER|SLAB_RED_ZONE|__OBJECT_POISON)))
+ 		return;
+ 
+-	init_object(s, object, SLUB_RED_INACTIVE);
++	init_object(s, object, SLAB_RED_RANDOM_INACTIVE(s));
+ 	init_tracking(s, object);
+ }
+ 
+@@ -1101,7 +1154,7 @@
+ 		return;
+ 
+ 	metadata_access_enable();
+-	memset(addr, POISON_INUSE, page_size(page));
++	memset(addr, SLAB_POISON_RANDOM_INUSE(s), page_size(page));
+ 	metadata_access_disable();
+ }
+ 
+@@ -1116,7 +1169,7 @@
+ 		return 0;
+ 	}
+ 
+-	if (!check_object(s, page, object, SLUB_RED_INACTIVE))
++	if (!check_object(s, page, object, SLAB_RED_RANDOM_INACTIVE(s)))
+ 		return 0;
+ 
+ 	return 1;
+@@ -1135,7 +1188,7 @@
+ 	if (s->flags & SLAB_STORE_USER)
+ 		set_track(s, object, TRACK_ALLOC, addr);
+ 	trace(s, page, object, 1);
+-	init_object(s, object, SLUB_RED_ACTIVE);
++	init_object(s, object,  SLAB_RED_RANDOM_ACTIVE(s));
+ 	return 1;
+ 
+ bad:
+@@ -1165,7 +1218,7 @@
+ 		return 0;
+ 	}
+ 
+-	if (!check_object(s, page, object, SLUB_RED_ACTIVE))
++	if (!check_object(s, page, object, SLAB_RED_RANDOM_ACTIVE(s)))
+ 		return 0;
+ 
+ 	if (unlikely(s != page->slab_cache)) {
+@@ -1216,7 +1269,7 @@
+ 		set_track(s, object, TRACK_FREE, addr);
+ 	trace(s, page, object, 0);
+ 	/* Freepointer not overwritten by init_object(), SLAB_POISON moved it */
+-	init_object(s, object, SLUB_RED_INACTIVE);
++	init_object(s, object, SLAB_RED_RANDOM_INACTIVE(s));
+ 
+ 	/* Reached end of constructed freelist yet? */
+ 	if (object != tail) {
+@@ -1283,6 +1336,9 @@
+ 		case 'a':
+ 			slub_debug |= SLAB_FAILSLAB;
+ 			break;
++                case 'h':
++                        slub_debug |= SLAB_HARDENED;
++                        break;
+ 		case 'o':
+ 			/*
+ 			 * Avoid enabling debugging on caches if its minimum
+@@ -1356,6 +1412,9 @@
+ 		iter = end + 1;
+ 	}
+ 
++        if (flags & SLAB_HARDENED)
++               printk("slab %s is in hardened mode.\n", name);
++
+ 	return flags;
+ }
+ #else /* !CONFIG_SLUB_DEBUG */
+@@ -1738,7 +1797,7 @@
+ 		slab_pad_check(s, page);
+ 		for_each_object(p, s, page_address(page),
+ 						page->objects)
+-			check_object(s, page, p, SLUB_RED_INACTIVE);
++			check_object(s, page, p, SLAB_RED_RANDOM_INACTIVE(s));
+ 	}
+ 
+ 	__ClearPageSlabPfmemalloc(page);
+@@ -2783,6 +2842,10 @@
+ 	if (unlikely(slab_want_init_on_alloc(gfpflags, s)) && object)
+ 		memset(object, 0, s->object_size);
+ 
++        /* clear object's next address. */
++        if ((s->flags & SLAB_HARDENED) && object)
++                set_freepointer(s, object, NULL);
++
+ 	slab_post_alloc_hook(s, gfpflags, 1, &object);
+ 
+ 	return object;
+@@ -3420,8 +3483,8 @@
+ 	n = page->freelist;
+ 	BUG_ON(!n);
+ #ifdef CONFIG_SLUB_DEBUG
+-	init_object(kmem_cache_node, n, SLUB_RED_ACTIVE);
+-	init_tracking(kmem_cache_node, n);
++        init_object(kmem_cache_node, n, SLAB_RED_RANDOM_ACTIVE(kmem_cache_node));
++        init_tracking(kmem_cache_node, n);
+ #endif
+ 	n = kasan_kmalloc(kmem_cache_node, n, sizeof(struct kmem_cache_node),
+ 		      GFP_KERNEL);
+@@ -3656,6 +3719,13 @@
+ 	s->random = get_random_long();
+ #endif
+ 
++#ifdef CONFIG_HKSP_SLAB_HARDENED
++        if (s->flags & SLAB_HARDENED) {
++                s->random_red = get_random_long();
++                printk("slab cache %s random red: %px", s->name, s->random_red);
++        }
++#endif
++
+ 	if (!calculate_sizes(s, -1))
+ 		goto error;
+ 	if (disable_higher_order_debug) {
+@@ -4437,7 +4507,7 @@
+ 	map = get_map(s, page);
+ 	for_each_object(p, s, addr, page->objects) {
+ 		u8 val = test_bit(slab_index(p, s, addr), map) ?
+-			 SLUB_RED_INACTIVE : SLUB_RED_ACTIVE;
++			 SLAB_RED_RANDOM_INACTIVE(s) : SLAB_RED_RANDOM_ACTIVE(s);
+ 
+ 		if (!check_object(s, page, p, val))
+ 			break;
+@@ -5176,6 +5246,29 @@
+ }
+ SLAB_ATTR(sanity_checks);
+ 
++#ifdef CONFIG_HKSP_SLAB_HARDENED
++static ssize_t slab_hardened_show(struct kmem_cache *s, char *buf)
++{
++        return sprintf(buf, "%d\n", !!(s->flags & SLAB_HARDENED));
++}
++
++
++static ssize_t slab_hardened_store(struct kmem_cache *s,
++                                const char *buf, size_t length)
++{
++        s->flags &= ~SLAB_HARDENED;
++        if (buf[0] == '1')
++                s->flags |= SLAB_HARDENED;
++
++        return length;
++}
++SLAB_ATTR(slab_hardened);
++#else
++static ssize_t slab_hardened_show(struct kmem_cache *s, char *buf) {}
++static ssize_t slab_hardened_store(struct kmem_cache *s,
++                                const char *buf, size_t length) {}
++#endif
++
+ static ssize_t trace_show(struct kmem_cache *s, char *buf)
+ {
+ 	return sprintf(buf, "%d\n", !!(s->flags & SLAB_TRACE));
+@@ -5462,6 +5555,9 @@
+ #ifdef CONFIG_SLUB_DEBUG
+ 	&total_objects_attr.attr,
+ 	&slabs_attr.attr,
++#ifdef CONFIG_HKSP_SLAB_HARDENED
++        &slab_hardened_attr.attr,
++#endif
+ 	&sanity_checks_attr.attr,
+ 	&trace_attr.attr,
+ 	&red_zone_attr.attr,
+diff -urN linux-5.6.7/mm/util.c linux-5.6.7-new/mm/util.c
+--- linux-5.6.7/mm/util.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/mm/util.c	2020-05-07 23:13:58.667020547 -0700
+@@ -330,6 +330,22 @@
+ #endif
+ }
+ 
++#ifdef CONFIG_HKSP_ASLR_HARDENED
++unsigned long randomize_stack_environ(unsigned long stack_top)
++{
++        unsigned long random_variable = 0;
++
++        if (current->flags & PF_RANDOMIZE)
++                random_variable = get_random_long() % 8192;
++
++#ifdef CONFIG_STACK_GROWSUP
++        return stack_top + random_variable;
++#else
++        return stack_top - random_variable;
++#endif
++}
++#endif
++
+ #ifdef CONFIG_ARCH_WANT_DEFAULT_TOPDOWN_MMAP_LAYOUT
+ unsigned long arch_randomize_brk(struct mm_struct *mm)
+ {
+diff -urN linux-5.6.7/net/ipv4/af_inet.c linux-5.6.7-new/net/ipv4/af_inet.c
+--- linux-5.6.7/net/ipv4/af_inet.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/net/ipv4/af_inet.c	2020-05-06 19:59:42.510968695 -0700
+@@ -436,6 +436,17 @@
+ 	struct sock *sk = sock->sk;
+ 	int err;
+ 
++#ifdef CONFIG_HKSP_ENHANCE_RAW_SOCKET
++	struct net *net = sock_net(sk);
++
++	if (net->ipv4.sysctl_raw_bind_disabled == 1) {
++		if (sock->type == SOCK_RAW && sk->sk_protocol == IPPROTO_TCP) {
++			printk("bind rawsocket with IPPROTO_TCP disabled.\n");
++			return -EINVAL;
++		}
++	}
++#endif
++
+ 	/* If the socket has its own bind function then use it. (RAW) */
+ 	if (sk->sk_prot->bind) {
+ 		return sk->sk_prot->bind(sk, uaddr, addr_len);
+diff -urN linux-5.6.7/net/ipv4/raw.c linux-5.6.7-new/net/ipv4/raw.c
+--- linux-5.6.7/net/ipv4/raw.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/net/ipv4/raw.c	2020-05-06 19:46:58.966384412 -0700
+@@ -340,6 +340,30 @@
+ 	return 0;
+ }
+ 
++#ifdef CONFIG_HKSP_ENHANCE_RAW_SOCKET
++static int raw_check_ipaddr(struct net *net, struct sock *sk, __be32 saddr)
++{
++	u32 tb_id = RT_TABLE_LOCAL;
++
++	if (net->ipv4.sysctl_raw_udp_verify != 1)
++		return 0;
++
++	if (sk->sk_protocol != IPPROTO_UDP)
++		return 0;
++
++	if (sk->sk_bound_dev_if)
++		tb_id = l3mdev_fib_table_by_index(sock_net(sk),
++						 sk->sk_bound_dev_if) ? : tb_id;
++
++	if (inet_addr_type_table(sock_net(sk), saddr, tb_id) != RTN_LOCAL) {
++		printk("Bad udp ip source address.\n");
++		return -1;
++	}
++
++	return 0;
++}
++#endif
++
+ static int raw_send_hdrinc(struct sock *sk, struct flowi4 *fl4,
+ 			   struct msghdr *msg, size_t length,
+ 			   struct rtable **rtp, unsigned int flags,
+@@ -412,6 +436,12 @@
+ 	if (iphlen >= sizeof(*iph)) {
+ 		if (!iph->saddr)
+ 			iph->saddr = fl4->saddr;
++#ifdef CONFIG_HKSP_ENHANCE_RAW_SOCKET
++		else {
++			if (raw_check_ipaddr(net, sk, iph->saddr) == -1)
++				goto error_free;
++		}
++#endif
+ 		iph->check   = 0;
+ 		iph->tot_len = htons(length);
+ 		if (!iph->id)
+@@ -515,6 +545,15 @@
+ 	if (len > 0xFFFF)
+ 		goto out;
+ 
++#ifdef CONFIG_HKSP_ENHANCE_RAW_SOCKET
++	if (net->ipv4.sysctl_raw_tcp_disabled == 1 && 
++		sk->sk_protocol == IPPROTO_TCP) {
++		err = -EINVAL;
++		printk("raw socket send protocol %d disabled.\n", sk->sk_protocol);
++		goto out;
++	}
++#endif
++		
+ 	/* hdrincl should be READ_ONCE(inet->hdrincl)
+ 	 * but READ_ONCE() doesn't work with bit fields.
+ 	 * Doing this indirectly yields the same result.
+@@ -658,7 +697,6 @@
+ 	if (hdrincl)
+ 		err = raw_send_hdrinc(sk, &fl4, msg, len,
+ 				      &rt, msg->msg_flags, &ipc.sockc);
+-
+ 	 else {
+ 		if (!ipc.addr)
+ 			ipc.addr = fl4.daddr;
+@@ -1135,6 +1173,11 @@
+ #ifdef CONFIG_NET_L3_MASTER_DEV
+ 	net->ipv4.sysctl_raw_l3mdev_accept = 1;
+ #endif
++#ifdef CONFIG_HKSP_ENHANCE_RAW_SOCKET
++	net->ipv4.sysctl_raw_bind_disabled = 0;
++	net->ipv4.sysctl_raw_tcp_disabled = 0;
++	net->ipv4.sysctl_raw_udp_verify = 0;
++#endif
+ }
+ 
+ static int __net_init raw_sysctl_init(struct net *net)
+diff -urN linux-5.6.7/net/ipv4/sysctl_net_ipv4.c linux-5.6.7-new/net/ipv4/sysctl_net_ipv4.c
+--- linux-5.6.7/net/ipv4/sysctl_net_ipv4.c	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/net/ipv4/sysctl_net_ipv4.c	2020-05-06 20:13:47.346405835 -0700
+@@ -1062,6 +1062,35 @@
+ 		.extra2		= SYSCTL_ONE,
+ 	},
+ #endif
++#ifdef CONFIG_HKSP_ENHANCE_RAW_SOCKET
++	{
++		.procname	= "raw_bind_disabled",
++		.data		= &init_net.ipv4.sysctl_raw_bind_disabled,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE,
++	},
++	{
++		.procname	= "raw_tcp_disabled",
++		.data		= &init_net.ipv4.sysctl_raw_tcp_disabled,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE,
++	},
++	{
++		.procname	= "raw_udp_verify",
++		.data		= &init_net.ipv4.sysctl_raw_udp_verify,
++		.maxlen		= sizeof(int),
++		.mode		= 0644,
++		.proc_handler	= proc_dointvec_minmax,
++		.extra1		= SYSCTL_ZERO,
++		.extra2		= SYSCTL_ONE,
++	},
++#endif
+ 	{
+ 		.procname	= "tcp_sack",
+ 		.data		= &init_net.ipv4.sysctl_tcp_sack,
+diff -urN linux-5.6.7/security/Kconfig linux-5.6.7-new/security/Kconfig
+--- linux-5.6.7/security/Kconfig	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/security/Kconfig	2020-05-09 03:24:49.731322246 -0700
+@@ -230,6 +230,141 @@
+ 	  If you wish for all usermode helper programs to be disabled,
+ 	  specify an empty string here (i.e. "").
+ 
++config HKSP_ENHANCE_RAW_SOCKET
++        bool "Enhance raw socket for ipv4 protocol"
++        default y
++        help
++          This is part of HKSP(huawei kernel self protect).
++          Enhance raw socket for ipv4 protocol.
++          - TCP data cannot be sent over raw sockets.
++          - UDP datagrams with an invalid source address cannot be sent
++            over raw sockets. The IP source address for any outgoing UDP
++            datagram must exist on a network interface or the datagram is
++            dropped. This change was made to limit the ability of malicious
++            code to create distributed denial-of-service attacks and limits
++            the ability to send spoofed packets (TCP/IP packets with a forged
++            source IP address).
++          - A call to the bind function with a raw socket for the IPPROTO_TCP
++            protocol is not allowed.
++
++config HKSP_KSGUARD
++        bool "Kernel patch guard"
++        default y
++        help
++          This is part of HKSP(huawei kernel self protect).
++          Ksguard is an anti rootkit tool for kernel level.
++          Currently it can detect 4 types of kernel rootkit,
++          These are the most popluar rootkit type on unix world.
++          - keyboard notifer rootkits.
++          - netfilter hooks rootkits.
++          - tty sniffer rootkits and other DKOM(direct kernel object modify) rootkits.
++          - system call table hijack rootkits.
++
++config HKSP_SMXP_HARDENED
++        bool "Smxp hardened, check smap&smep when return from kernel space via a syscall."
++        depends on X86_64
++        default y
++        help
++          this is part of HKSP(huawei kernel self protect).
++          Check smap&smep when return from kernel space via a syscall,
++          this can detect some kernel exploit code to bypass smap & smep
++          feature via rop attack technology.
++
++config HKSP_PTRACE_HARDENED
++        bool "Ptrace hardened, disallow attach to non child process."
++        default y
++        help
++          this is part of HKSP(huawei kernel self protect).
++          Disallow attach to non child process.
++          This can prevent process memory inject via ptrace.
++
++config HKSP_ASLR_HARDENED
++        bool "Hardened the aslr of user process stack."
++        depends on X86_64
++        default y
++        help
++          this is part of HKSP(huawei kernel self protect).
++	  User stack aslr enhanced.
++	  Old user process's stack is between 0-1G on 64bit.
++	  the actually random range is 0-2^24.
++	  we introduce STACK_RND_BITS to control the range dynamically.
++	  echo "24" > /proc/sys/vm/stack_rnd_bits
++	  we also randomize the space between elf_info and environ.
++	  And randomize the space between stack and elf_info.
++
++config HKSP_PROC_INFO_LEAK
++        bool "protect important file with no read access for non root user."
++        default y
++        help
++          Proc user, set /proc/{modules,keys,key-users},
++          /proc/sys/kernel/{panic,panic_on_oops,dmesg_restrict,kptr_restrict,keys},
++          /proc/sys/vm/{mmap_min_addr} as 0640.
++          this is part of HKSP(huawei kernel self protect).
++
++config HKSP_SLAB_HARDENED
++        bool "Slub hardened"
++        default y
++        help
++          Slub hardened, this is part of HKSP(huawei kernel self protect).
++	  - redzone/poison randomization.
++	  - double free enhance.
++	  - clear the next object address information when using kmalloc function.
++
++config HKSP_ROP_STACK_PIVOT
++        bool "Rop stack pivot guard"
++        depends on X86_64
++        default y
++        help
++          Rop stack pivot guard, this is part of HKSP(huawei kernel self protect).
++	  - user process stack can't be is mmap area.
++	  - check kernel stack range at each system call ret.
++  	    the rsp pointer can point below __PAGE_OFFSET.
++
++config HKSP_NS_GUARD
++        bool "Namespace escape guard"
++        default y
++        help
++          Namespace escape guard, this is part of HKSP(huawei kernel self protect).
++	  This feature detects pid namespace escape via kernel exploits.
++	  The current public method to bypass namespace is hijack init_nsproxy
++	  to current process.
++
++config HKSP_CREDENTIALS_GUARD
++        bool "Process credentials guard"
++        default y
++        help
++          Process credentials guard, this is part of HKSP(huawei kernel self protect).
++	  - random cred's magic.
++  	    most kernel exploit try to find some offsets in struct cred,
++  	    but it depends on CONFIG_DEBUG_CREDENTIALS, then need to compute
++  	    the right offset by that kernel config.
++	  - detect shellcode like:
++  	    commit_creds(prepare_kernel_cred(0));
++            the common kernel code is never write like that.
++
++config HKSP_CODE_INTEGRITY_GUARD
++        bool "Code integrity guard"
++        default y
++        help
++          To support certificate for user process execve, this is part of
++          HKSP(huawei kernel self protect).
++	  it can prevent some internet explorer to load third party so librarys.
++
++config HKSP_ARBITRARY_CODE_GUARD
++        bool "Arbitrary code guard"
++        default y
++        help
++          Arbitrary code guard, this is part of HKSP(huawei kernel self protect).
++	  we extended the libc personality() to support:
++	  - mmap can't memory with PROT_WRITE|PROT_EXEC.
++	  - mprtect can't change PROT_WRITE to PROT_EXEC.
++
++config HKSP_HIDESYM
++        bool "hide kernel symbol"
++        default y
++        help
++          hide kernel symbol, this is part of HKSP(huawei kernel self protect).
++
+ source "security/selinux/Kconfig"
+ source "security/smack/Kconfig"
+ source "security/tomoyo/Kconfig"
+diff -urN linux-5.6.7/security/ksguard/ksg_keyboard.c linux-5.6.7-new/security/ksguard/ksg_keyboard.c
+--- linux-5.6.7/security/ksguard/ksg_keyboard.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_keyboard.c	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,49 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/sched.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/notifier.h>
++
++#include "ksg_main.h"
++#include "ksg_keyboard.h"
++
++int ksg_check_keyboard(void)
++{
++	struct atomic_notifier_head *key_list;
++	struct notifier_block *nb;
++	unsigned long flags;
++
++	key_list = (struct atomic_notifier_head *)
++			ksg_search_symbol_addr("keyboard_notifier_list");
++	if (!key_list)
++		return -1;
++	printk("found keyboard_notifier_list at 0x%llx\n", (u64)key_list);
++
++	spin_lock_irqsave(&key_list->lock, flags);
++	nb = key_list->head;
++	while (nb) {
++		if (nb->notifier_call &&
++			!ksg_is_module_addr(nb->notifier_call)) {
++			printk("keyboard notifier: call addr 0x%lx\t%d\n",
++				nb->notifier_call, nb->priority);
++		}
++		nb = nb->next;
++	}
++	spin_unlock_irqrestore(&key_list->lock, flags);
++
++	return 0;
++}
++
++int ksg_keyboard_init(void)
++{
++	return 0;
++}
++
++int ksg_keyboard_exit(void)
++{
++	return 0;
++}
+diff -urN linux-5.6.7/security/ksguard/ksg_keyboard.h linux-5.6.7-new/security/ksguard/ksg_keyboard.h
+--- linux-5.6.7/security/ksguard/ksg_keyboard.h	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_keyboard.h	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,8 @@
++#ifndef KSG_KEYBOARD_H
++#define KSG_KEYBOARD_H
++
++int ksg_check_keyboard(void);
++int ksg_keyboard_init(void);
++int ksg_keyboard_exit(void);
++
++#endif
+diff -urN linux-5.6.7/security/ksguard/ksg_main.c linux-5.6.7-new/security/ksguard/ksg_main.c
+--- linux-5.6.7/security/ksguard/ksg_main.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_main.c	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,176 @@
++#include <linux/init.h>
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/proc_fs.h>
++#include <linux/seq_file.h>
++#include <linux/init.h>
++#include <linux/uaccess.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/export.h>
++#include <linux/cred.h>
++#include <linux/nsproxy.h>
++#include <linux/init_task.h>
++#include <linux/mnt_namespace.h>
++#include <linux/utsname.h>
++#include <linux/fs.h>
++#include <linux/path.h>
++#include <linux/fs_struct.h>
++
++#include "ksg_main.h"
++#include "ksg_keyboard.h"
++#include "ksg_nf.h"
++#include "ksg_pointer.h"
++#include "ksg_sct.h"
++
++struct proc_dir_entry *ksg_proc, *state_proc;
++
++void *ksg_search_symbol_addr(char *symbol_name)
++{
++	return (void *)kallsyms_lookup_name(symbol_name);
++}
++
++int ksg_is_module_addr(void *addr)
++{
++	struct module *m;
++
++	mutex_lock(&module_mutex);
++	list_for_each_entry(m, (__this_module.list.prev), list) {
++		if ((u64)m->core_layout.base >= (u64)addr &&
++			(u64)m->core_layout.base + m->core_layout.size <= (u64)addr) {
++			mutex_unlock(&module_mutex);
++			return 0;
++		}
++	}
++	mutex_unlock(&module_mutex);
++
++	return -1;
++}
++
++static ssize_t ksg_state_read(struct file *file, char __user *buf,
++                      size_t len, loff_t *offset)
++{
++        return 0;
++}
++
++static ssize_t ksg_state_write(struct file *file, const char __user *buf,
++                      size_t len, loff_t *offset)
++{
++	u64 value;
++	char tmp[32];
++	size_t n = 0;
++
++        if (copy_from_user(tmp, buf, len))
++                return -1;
++
++	value = simple_strtoul(tmp, '\0', 10);
++	switch (value) {
++	case 1:
++		ksg_check_keyboard();
++		break;
++	case 2:
++		ksg_check_nf();
++		break;
++	case 3:
++		ksg_check_pointer();
++		break;
++	case 4:
++		ksg_check_sct();
++		break;
++	default:
++		break;
++	}
++
++        *offset += len;
++        n += len;
++
++        return len;
++}
++
++static int ksg_state_open(struct inode *inode, struct file *filp)
++{
++        printk("open /proc/ksg_state_proc ok.\n");
++        return 0;
++}
++
++static int ksg_state_release(struct inode *inode, struct file *file)
++{
++        printk("close /proc/ksg_state_proc ok.\n");
++        return 0;
++}
++
++static const struct file_operations ksg_state_ops = {
++        .owner = THIS_MODULE,
++        .open = ksg_state_open,
++        .read = ksg_state_read,
++        .write = ksg_state_write,
++        .release = ksg_state_release,
++        .llseek = default_llseek,
++};
++
++int ksg_home_init(void)
++{
++	ksg_proc = proc_mkdir("ksguard", NULL);
++	if (!ksg_proc)
++		return -1;
++
++        state_proc = proc_create("state", 0777, ksg_proc, &ksg_state_ops);
++        if (!state_proc) {
++		remove_proc_entry("ksguard", NULL);
++                return -1;
++	}
++
++	printk("create /proc/ksguard/state ok.\n");
++	return 0;
++}
++
++void ksg_home_exit(void)
++{
++	remove_proc_entry("state", ksg_proc);
++	remove_proc_entry("ksguard", NULL);
++}
++
++int ksg_init(void)
++{
++	if (ksg_home_init() == -1)
++		return -1;
++
++	if (ksg_keyboard_init() == -1)
++		goto out_home;
++
++	if (ksg_nf_init() == -1)
++		goto out_keyboard;
++
++	if (ksg_pointer_init() == -1)
++		goto out_nf;
++
++	if (ksg_sct_init() == -1)
++		goto out_pointer;
++
++	return 0;
++
++out_pointer:
++	ksg_pointer_exit();
++out_nf:
++	ksg_nf_exit();
++out_keyboard:
++	ksg_keyboard_exit();
++out_home:
++	ksg_home_exit();
++	return -1;
++}
++
++void ksg_exit(void)
++{
++	ksg_sct_exit();
++	ksg_pointer_exit();
++	ksg_nf_exit();
++	ksg_keyboard_exit();
++	ksg_home_exit();
++}
++
++module_init(ksg_init);
++module_exit(ksg_exit);
++
++MODULE_LICENSE("GPL");
++MODULE_AUTHOR("wzt");
+diff -urN linux-5.6.7/security/ksguard/ksg_main.h linux-5.6.7-new/security/ksguard/ksg_main.h
+--- linux-5.6.7/security/ksguard/ksg_main.h	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_main.h	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,12 @@
++#ifndef KSG_MAIN_H
++#define KSG_MAIN_H
++
++struct proc_dir_entry;
++
++extern struct proc_dir_entry *ksg_proc;
++
++void *ksg_search_symbol_addr(char *symbol_name);
++int ksg_is_module_addr(void *addr);
++
++
++#endif
+diff -urN linux-5.6.7/security/ksguard/ksg_nf.c linux-5.6.7-new/security/ksguard/ksg_nf.c
+--- linux-5.6.7/security/ksguard/ksg_nf.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_nf.c	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,113 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/sched.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/netfilter.h>
++
++#include "ksg_main.h"
++#include "ksg_nf.h"
++
++struct nf_white_st {
++	char sym_name[64];
++	void *sym_addr;
++}nf_white_list[64] = {
++	{"iptable_filter_hook",		NULL},
++	{"iptable6_filter_hook",	NULL},
++	{"ip_sabotage_in", 		NULL},
++	{"ebt_nat_in",			NULL},
++	{"ebt_nat_out",			NULL},
++	{"br_nf_pre_routing", 		NULL},
++	{"br_nf_post_routing", 		NULL},
++	{"br_nf_local_in",		NULL},
++	{"br_nf_forword_ip",		NULL},
++	{"br_nf_forword_arp",		NULL},
++	{"ipv4_conntrack_defrag",	NULL},
++	{"ipv4_conntrack_in",		NULL},
++	{"ipv4_conntrack_local",	NULL},
++	{"ipv4_helper",			NULL},
++	{"ipv4_confirm",		NULL},
++	{"selinux_ipv4_forword",	NULL},
++	{"selinux_ipv6_forword",	NULL},
++	{"selinux_ipv4_output",		NULL},
++	{"selinux_ipv4_postroute",	NULL},
++	{"selinux_ipv6_postroute",	NULL},
++};
++			
++void nf_white_list_init(void)
++{
++	int i = 0;
++
++	while (i < 64 && nf_white_list[i].sym_name[0]) {
++		nf_white_list[i].sym_addr = 
++			(void *)ksg_search_symbol_addr(nf_white_list[i].sym_name);
++		if (!nf_white_list[i].sym_addr) {
++			i++;
++			continue;
++		}
++		printk("search %s at 0x%llx\n", 
++			nf_white_list[i].sym_name, nf_white_list[i].sym_addr);
++		i++;
++	}
++}
++
++int nf_white_list_check(void *addr)
++{
++        int i = 0;
++
++        while (i < 64 && nf_white_list[i].sym_name[0]) {
++                if (nf_white_list[i].sym_addr == addr)
++			return 0;
++                i++;
++        }
++
++	return -1;
++}
++
++int ksg_check_nf(void)
++{
++	struct nf_hook_ops *elem;
++	void *nf_hook_mutex_p;
++	int i, h, n = 0;
++
++	nf_hook_mutex_p = (void *)ksg_search_symbol_addr("nf_hook_mutex");
++	if (!nf_hook_mutex_p)
++		return -1;
++	printk("found nf_hook_mutex at addr: 0x%llx\n", nf_hook_mutex_p);
++
++/*
++	if (mutex_lock_interruptible((struct mutex *)nf_hook_mutex_p) < 0)
++		return -1;
++
++	for (i = 0; i < ARRAY_SIZE(nf_hooks); i++) {
++		for (h = 0; h < NF_MAX_HOOKS; h++) {
++			list_for_each_entry(elem, (&nf_hooks[i][h]), list) {
++				if (nf_white_list_check(elem->hook) == -1) {
++					printk("nf hook: [%d][%d] - %s %llx %d %d\n",
++						i, h,
++						elem->owner->name ? elem->owner->name : "NULL",
++						elem->hook, elem->pf, elem->hooknum);
++				}
++			}
++		}
++	}
++*/
++	
++	mutex_unlock((struct mutex *)nf_hook_mutex_p);
++	return 0;
++}
++
++int ksg_nf_init(void)
++{
++	nf_white_list_init();
++
++	return 0;
++}
++
++int ksg_nf_exit(void)
++{
++	return 0;
++}
+diff -urN linux-5.6.7/security/ksguard/ksg_nf.h linux-5.6.7-new/security/ksguard/ksg_nf.h
+--- linux-5.6.7/security/ksguard/ksg_nf.h	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_nf.h	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,8 @@
++#ifndef KSG_NF_H
++#define KSG_NF_H
++
++int ksg_check_nf(void);
++int ksg_nf_init(void);
++int ksg_nf_exit(void);
++
++#endif
+diff -urN linux-5.6.7/security/ksguard/ksg_pointer.c linux-5.6.7-new/security/ksguard/ksg_pointer.c
+--- linux-5.6.7/security/ksguard/ksg_pointer.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_pointer.c	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,267 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/sched.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/proc_fs.h>
++#include <linux/fs.h>
++#include <linux/namei.h>
++#include <linux/tty.h>
++#include <linux/tty_driver.h>
++#include <net/tcp.h>
++#include <net/sock.h>
++
++#include "ksg_main.h"
++#include "ksg_pointer.h"
++
++spinlock_t *proc_subdir_lock_p;
++
++char *tcp_pointer_array[] = {
++				/* for rootkits to hide tcp connections. */
++				"proc_reg_open",
++				"proc_reg_read",
++				"proc_reg_write",
++				"proc_reg_release",
++				"proc_reg_mmap",
++				NULL
++			};
++
++char *proc_pointer_array[] = {
++				/* for rootkits to hide process. */
++				"proc_root_readdir",
++				NULL
++			};
++
++char *seq_pointer_array[] = {
++				/* for rootkits to hide tcp connections. */
++				"tcp4_seq_show",
++				"tcp6_seq_show",
++				NULL
++			};
++
++char *tty_pointer_array[] = {
++				/* for rootkits to sniff tty buffers. */
++				"con_open",
++				"pty_open",
++				NULL
++			};
++
++int audit_seq_pointer(char *sym_name, void *curr_addr)
++{
++	void *sym_addr;
++
++	sym_addr = ksg_search_symbol_addr(sym_name);
++	if (!sym_addr) {
++		printk("search %s address failed.\n", sym_name);
++		return -1;
++	}
++	printk("got %s address at 0x%llx\n", sym_name, (u64)sym_addr);
++
++	if (curr_addr == sym_addr)
++		return -1;
++
++	printk("VFS layer: %s 0x%llx = > 0x%llx\n", 
++		sym_name, (u64)sym_addr, (u64)curr_addr);
++	return 0;
++}
++
++int ksg_proc_match(const char *name, struct proc_dir_entry *de, unsigned int len)
++{
++        if (len < de->namelen)
++                return -1;
++        if (len > de->namelen)
++                return 1;
++
++        return memcmp(name, de->name, len);
++}
++
++/*
++ * checking the proc operations which most rootkit will hijack 
++ * to hide tcp connections.
++ */
++int __ksg_seq_pointer(char *name, char *symbol, int len)
++{
++        struct rb_node *node = init_net.proc_net->subdir.rb_node;
++
++	spin_lock(proc_subdir_lock_p);
++        while (node) {
++                struct proc_dir_entry *de = rb_entry(node,
++                                                     struct proc_dir_entry,
++                                                     subdir_node);
++                int result = ksg_proc_match(name, de, len);
++
++                if (result < 0)
++                        node = node->rb_left;
++                else if (result > 0)
++                        node = node->rb_right;
++                else {
++			spin_unlock(proc_subdir_lock_p);
++			printk("found %s\n", name);
++			return audit_seq_pointer(symbol, (void *)(de->seq_ops->show));
++		}
++        }
++
++	spin_unlock(proc_subdir_lock_p);
++	return -1;
++}
++
++void ksg_seq_pointer(void)
++{
++	__ksg_seq_pointer("tcp", "tcp4_seq_show", 3);
++	__ksg_seq_pointer("tcp6", "tcp6_seq_show", 4);
++}
++
++int audit_proc_pointer(char *file_name, char *sym_name)
++{
++	struct path path;
++	struct inode *node;
++	struct file_operations *fops;
++	void *sym_addr, *curr_addr;
++
++	sym_addr = ksg_search_symbol_addr(sym_name);
++	if (!sym_addr) {
++		printk("search %s failed.\n", sym_name);
++		return -1;
++	}
++
++	if (kern_path(file_name, 0, &path) < 0)
++		return -1;
++
++	node = path.dentry->d_inode;
++	fops = (struct file_operations *)node->i_fop;
++
++	if (!strcmp(sym_name, "proc_reg_open")) {
++		curr_addr = fops->open;
++		printk("got fops open addr at 0x%llx\n", (u64)curr_addr);
++	} else if (!strcmp(sym_name, "proc_reg_read")) {
++                curr_addr = fops->read;
++                printk("got fops read addr at 0x%llx\n", (u64)curr_addr);
++        } else if (!strcmp(sym_name, "proc_reg_write")) {
++                curr_addr = fops->write;
++                printk("got fops write addr at 0x%llx\n", (u64)curr_addr);
++        } else if (!strcmp(sym_name, "proc_reg_release")) {
++                curr_addr = fops->release;
++                printk("got fops release addr at 0x%llx\n", (u64)curr_addr);
++        } else if (!strcmp(sym_name, "proc_reg_mmap")) {
++                curr_addr = fops->mmap;
++                printk("got fops mmap addr at 0x%llx\n", (u64)curr_addr);
++        } else if (!strcmp(sym_name, "proc_root_readdir")) {
++                curr_addr = fops->iterate_shared;
++                printk("got fops iterate_shared addr at 0x%llx\n", (u64)curr_addr);
++        } else {
++		path_put(&path);
++		return -1;
++	}
++
++	if (curr_addr != sym_addr) {
++		printk("VFS layer: %s %s (0x%llx) => 0x%llx\n",
++			file_name, sym_name, (u64)sym_addr, (u64)curr_addr);
++	}
++
++	path_put(&path);
++	return 0;
++}
++
++void ksg_proc_pointer(char *file_name, char *sym_array[])
++{
++	int i = 0;
++
++	while (sym_array[i]) {
++		audit_proc_pointer(file_name, sym_array[i]);
++		i++;
++	}
++}
++
++/* caller must hold tty_mutex lock. */
++int tty_seq_pointer(char *sym_name, struct tty_driver *driver)
++{
++	void *sym_addr;
++	
++	sym_addr = ksg_search_symbol_addr(sym_name);
++	if (!sym_addr)
++		return -1;
++	printk("search %s address at 0x%llx\n", sym_name, (u64)sym_addr);
++
++	if (driver->ops->open != sym_addr) {
++		printk("TTY layer: %s (%s) (0x%llx => 0x%llx)\n",
++			driver->name, sym_name, (u64)sym_addr, (u64)driver->ops->open);
++	}
++	
++	return 0;
++}
++
++void do_null(struct kref *kref)
++{
++	return ;
++}
++
++/*
++ * checking the open function of tty_driver's ops filed.
++ * most tty sniffer rootkit will hijack these pointers.
++ */
++int ksg_tty_pointer(char *sym_array[])
++{
++	struct tty_driver *driver;
++	struct list_head *tty_drivers_p;
++	struct mutex *tty_mutex_p;
++
++	tty_drivers_p = (struct list_head *)
++				ksg_search_symbol_addr("tty_drivers");
++	if (!tty_drivers_p)
++		return -1;
++
++	tty_mutex_p = (struct mutex *)
++				ksg_search_symbol_addr("tty_mutex");
++	if (!tty_mutex_p)
++		return -1;
++
++	mutex_lock(tty_mutex_p);
++	list_for_each_entry(driver, tty_drivers_p, tty_drivers) {
++		kref_get(&driver->kref);
++
++		/* ignore the serial type of tty driver. */
++		switch (driver->type) {
++		case TTY_DRIVER_TYPE_CONSOLE:
++			tty_seq_pointer(sym_array[0], driver);
++			break;
++		case TTY_DRIVER_TYPE_PTY:
++			tty_seq_pointer(sym_array[1], driver);
++			break;
++		default:
++			break;
++		}
++
++		kref_put(&driver->kref, do_null);
++	}
++
++	mutex_unlock(tty_mutex_p);
++	return 0;
++}
++
++int ksg_check_pointer(void)
++{
++	ksg_proc_pointer("/proc/net/tcp", tcp_pointer_array);
++	ksg_proc_pointer("/proc", proc_pointer_array);
++	ksg_seq_pointer();
++	ksg_tty_pointer(tty_pointer_array);
++
++	return 0;
++}
++
++int ksg_pointer_init(void)
++{
++	proc_subdir_lock_p = ksg_search_symbol_addr("proc_subdir_lock");
++	if (!proc_subdir_lock_p)
++		return -1;
++
++	printk("found proc_subdir_lock address at 0x%llx\n", (u64)proc_subdir_lock_p);
++	return 0;
++}
++
++int ksg_pointer_exit(void)
++{
++	return 0;
++}
+diff -urN linux-5.6.7/security/ksguard/ksg_pointer.h linux-5.6.7-new/security/ksguard/ksg_pointer.h
+--- linux-5.6.7/security/ksguard/ksg_pointer.h	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_pointer.h	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,42 @@
++#ifndef KSG_POINTER_H
++#define KSG_POINTER_H
++
++struct proc_dir_entry {
++        /*
++         * number of callers into module in progress;
++         * negative -> it's going away RSN
++         */
++        atomic_t in_use;
++        refcount_t refcnt;
++        struct list_head pde_openers;   /* who did ->open, but not ->release */
++        /* protects ->pde_openers and all struct pde_opener instances */
++        spinlock_t pde_unload_lock;
++        struct completion *pde_unload_completion;
++        const struct inode_operations *proc_iops;
++        const struct file_operations *proc_fops;
++        union {
++                const struct seq_operations *seq_ops;
++                int (*single_show)(struct seq_file *, void *);
++        };
++        proc_write_t write;
++        void *data;
++        unsigned int state_size;
++        unsigned int low_ino;
++        nlink_t nlink;
++        kuid_t uid;
++        kgid_t gid;
++        loff_t size;
++        struct proc_dir_entry *parent;
++        struct rb_root subdir;
++        struct rb_node subdir_node;
++        char *name;
++        umode_t mode;
++        u8 namelen;
++        char inline_name[];
++} __randomize_layout;
++
++int ksg_check_pointer(void);
++int ksg_pointer_init(void);
++int ksg_pointer_exit(void);
++
++#endif
+diff -urN linux-5.6.7/security/ksguard/ksg_sct.c linux-5.6.7-new/security/ksguard/ksg_sct.c
+--- linux-5.6.7/security/ksguard/ksg_sct.c	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_sct.c	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,58 @@
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mm.h>
++#include <linux/slab.h>
++#include <linux/init.h>
++#include <linux/sched.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/netfilter.h>
++
++#include "ksg_main.h"
++#include "ksg_sct.h"
++
++void **sys_call_table_p;
++void **ia32_sys_call_table_p;
++int (*is_kernel_text_p)(unsigned long);
++
++int ksg_check_sct(void)
++{
++	int i;
++
++	sys_call_table_p = (void *)ksg_search_symbol_addr("sys_call_table");
++	if (!sys_call_table_p)
++		return -1;
++
++	ia32_sys_call_table_p = (void *)ksg_search_symbol_addr("ia32_sys_call_table");
++	if (!ia32_sys_call_table_p)
++		return -1;
++
++	//is_kernel_text_p = (void *)ksg_search_symbol_addr("is_kernel_text");
++	is_kernel_text_p = (void *)ksg_search_symbol_addr("func_ptr_is_kernel_text");
++	if (!is_kernel_text_p)
++		return -1;
++
++	printk("search sys_call_table at 0x%llx\n", (u64)sys_call_table_p);
++	printk("search ia32_sys_call_table at 0x%llx\n", (u64)ia32_sys_call_table_p);
++	printk("search is_kernl_text at 0x%llx\n", (u64)is_kernel_text_p);
++
++	for (i = 0; i < 16; i++) {
++		if (!is_kernel_text_p((u64)sys_call_table_p[i]) ||
++			!is_kernel_text_p((u64)ia32_sys_call_table_p[i])) {
++			printk("SCT: syscall %d 0x%llx changed.\n",
++				i, (u64)sys_call_table_p[i]);
++		}
++	}
++
++	return 0;
++}
++
++int ksg_sct_init(void)
++{
++	return 0;
++}
++
++int ksg_sct_exit(void)
++{
++	return 0;
++}
+diff -urN linux-5.6.7/security/ksguard/ksg_sct.h linux-5.6.7-new/security/ksguard/ksg_sct.h
+--- linux-5.6.7/security/ksguard/ksg_sct.h	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/ksg_sct.h	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,8 @@
++#ifndef KSG_SCT_H
++#define KSG_SCT_H
++
++int ksg_check_sct(void);
++int ksg_sct_init(void);
++int ksg_sct_exit(void);
++
++#endif
+diff -urN linux-5.6.7/security/ksguard/Makefile linux-5.6.7-new/security/ksguard/Makefile
+--- linux-5.6.7/security/ksguard/Makefile	1969-12-31 16:00:00.000000000 -0800
++++ linux-5.6.7-new/security/ksguard/Makefile	2020-05-06 23:15:11.935765618 -0700
+@@ -0,0 +1,8 @@
++obj-m += ksguard.o
++ksguard-objs := ksg_main.o ksg_keyboard.o ksg_nf.o ksg_pointer.o ksg_sct.o
++
++PWD := $(shell pwd)
++all:
++	make -C /lib/modules/$(shell uname -r)/build M=$(PWD) modules
++clean:
++	rm *.o *.ko *.mod.c *.order *.symvers
+diff -urN linux-5.6.7/security/Makefile linux-5.6.7-new/security/Makefile
+--- linux-5.6.7/security/Makefile	2020-04-23 01:38:27.000000000 -0700
++++ linux-5.6.7-new/security/Makefile	2020-05-06 23:35:12.325858902 -0700
+@@ -30,6 +30,7 @@
+ obj-$(CONFIG_SECURITY_SAFESETID)       += safesetid/
+ obj-$(CONFIG_SECURITY_LOCKDOWN_LSM)	+= lockdown/
+ obj-$(CONFIG_CGROUP_DEVICE)		+= device_cgroup.o
++obj-$(CONFIG_HKSP_KSGUARD)             += ksguard/
+ 
+ # Object integrity file lists
+ subdir-$(CONFIG_INTEGRITY)		+= integrity
