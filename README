@@ -1,3 +1,10 @@
+NOTICE:
+ This project have done my research in spare time，the name of hksp was given by myself，
+it's not related to huawei company，there is no huawei product use these code. 
+ This patch code is raised by me,as one person do not have enough energy to cover every thing，
+so there is lack of quality assurance like review and test. 
+ THis patch is just a demo code. 
+
 =============================
 Huawei kernel self protection
 =============================
