@@ -5,8 +5,22 @@ it's not related to huawei company，there is no huawei product use these code.
 so there is lack of quality assurance like review and test. 
  THis patch is just a demo code. 
 
+UPDATE:
+- Thanks grsecurity team to find lots of bug in this patch.
+ The ksg_guard is a sample poc to detect kernel level rootkits,
+ the user and kernel communication is throw the /proc interface, my origin purpose
+is to verify the idea quickly, so i do not add enough security checks on it.
+Actually checking rootkit in kernel level still need to discuss with the community,
+if need to design an ARK(anti rootkit) tool for the linux system...
+ So, i remove the ksg_guard code, and going to rewrite with netlink interfaces.
+
+- i aslo remove the hide symbol module, because the kptr_restrict is good enough.
+  thanks shoulewoba to review the code.
+
+- remove huawei strings, because this is my personal work, not official project.
+
 =============================
-Huawei kernel self protection
+Another kernel self protection
 =============================
 
 Cred guard
@@ -106,33 +120,6 @@ Enhance raw socket for ipv4 protocol.
   protocol is not allowed.
   echo 1 > /proc/sys/net/ipv4/raw_bind_disabled
 
-Kernel self guard
------------------
-Ksguard is an anti rootkit tool on kernel level.
-Currently it can detect 4 types of kernel rootkits,
-These are the most popluar rootkits type on unix world.
-
-- keyboard notifer rootkits.
-- netfilter hooks rootkits.
-- tty sniffer rootkits and other DKOM(direct kernel object modify) rootkits.
-- system call table hijack rootkits.
-
-Install:
-/sbin/insmod /lib/modules/5.6.7/kernel/security/ksguard/ksguard.ko
-
-Feature:
-Detect keyboard notifer rootkits:
-echo "1" > /proc/ksguard/state
-
-Detect netfilter hooks rootkits:
-echo "2" > /proc/ksguard/state
-
-Detect tty sniffer rootkits:
-echo "3" > /proc/ksguard/state
-
-Detect syscall table pointer:
-echo "4" > /proc/ksguard/state
-
 Arbitrary code guard
 --------------------
 we extended the libc personality() to support:
@@ -142,16 +129,4 @@ we extended the libc personality() to support:
 Code integrity guard
 --------------------
 To support certificate for user process execve.
-it can prevent some internet explorer to load
-third party so librarys.
-
-Hide symbol
------------
-Hide symbols from /proc/kallsyms.
-
-
-
-
-
-
-
+it can prevent some internet explorer to load third party so librarys.
